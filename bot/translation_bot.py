@@ -298,8 +298,65 @@ class TranslationBot(commands.Bot):
         embed.add_field(
             name="📋 Commands",
             value="`/status` - Check bot status and usage\n"
-                  "`/help` - Show this help message",
+                  "`/help` - Show this help message\n"
+                  "`/test_logging` - Test all logging levels (Admin only)",
             inline=False
         )
         
         await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="test_logging")
+    async def test_logging_command(self, ctx):
+        """Test all logging levels - Admin only command."""
+        # Check if user has administrator permissions
+        if not ctx.author.guild_permissions.administrator:
+            await ctx.send("❌ This command requires administrator permissions.", ephemeral=True)
+            return
+        
+        from utils.logger import test_all_log_levels, get_log_level_info
+        
+        # Get current logging info
+        log_info = get_log_level_info()
+        
+        embed = discord.Embed(
+            title="🧪 Logging System Test",
+            description="Testing all logging levels...",
+            color=0x00ff00
+        )
+        
+        embed.add_field(
+            name="Current Log Level",
+            value=f"**{log_info['current_level']}**",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Visible Levels",
+            value=", ".join(log_info['visible_levels']),
+            inline=True
+        )
+        
+        if log_info['hidden_levels']:
+            embed.add_field(
+                name="Hidden Levels",
+                value=", ".join(log_info['hidden_levels']),
+                inline=True
+            )
+        
+        embed.add_field(
+            name="📝 Note",
+            value="Check the bot logs to see the test messages. "
+                  f"Only levels {', '.join(log_info['visible_levels'])} will be visible with current settings.",
+            inline=False
+        )
+        
+        # Send the embed first
+        await ctx.send(embed=embed)
+        
+        # Perform the logging test
+        self.logger.info("🧪 LOGGING TEST STARTED by admin")
+        test_all_log_levels(self.logger)
+        self.logger.info("🧪 LOGGING TEST COMPLETED")
+        
+        # Send completion message
+        await ctx.followup.send("✅ Logging test completed! Check the bot logs to see all test messages.", ephemeral=True)

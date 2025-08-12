@@ -36,7 +36,7 @@ async def main():
     
     for var in required_env_vars:
         if not os.getenv(var):
-            logger.error(f"Missing required environment variable: {var}")
+            logger.critical(f"Missing required environment variable: {var} - Bot cannot start")
             sys.exit(1)
     
     logger.info("Starting Key Translation Bot...")
