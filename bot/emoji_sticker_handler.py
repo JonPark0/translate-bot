@@ -57,44 +57,61 @@ class EmojiStickerHandler:
         """Get detailed info about stickers."""
         sticker_info = []
         for sticker in stickers:
-            # Determine format and URL
-            format_type = getattr(sticker, 'format', discord.StickerFormatType.png)
+            # Get sticker format - more robust approach
+            format_type = sticker.format if hasattr(sticker, 'format') else discord.StickerFormatType.png
             
-            # Generate multiple URLs for different formats to ensure compatibility
-            urls = []
+            self.logger.debug(f"Processing sticker {sticker.name} (ID: {sticker.id}) - Format: {format_type}")
             
+            # Determine the best URL format based on sticker type
             if format_type == discord.StickerFormatType.png:
+                # Static PNG stickers
+                primary_url = self._get_sticker_url(str(sticker.id), 'png')
+                fallback_urls = []
                 extension = 'png'
-                urls = [self._get_sticker_url(str(sticker.id), 'png')]
+                animated = False
+                
             elif format_type == discord.StickerFormatType.apng:
-                # APNG stickers can be accessed as multiple formats
-                extension = 'gif'  # Use GIF for better animation support
-                urls = [
-                    self._get_sticker_url(str(sticker.id), 'gif'),  # Primary: GIF for animation
-                    self._get_sticker_url(str(sticker.id), 'png')   # Fallback: Static PNG
+                # Animated PNG stickers - try GIF first for better Discord support
+                primary_url = self._get_sticker_url(str(sticker.id), 'png') # Discord serves APNG as PNG with animation
+                fallback_urls = [
+                    self._get_sticker_url(str(sticker.id), 'gif'),  # Alternative GIF version
                 ]
+                extension = 'png'  # Keep original extension
+                animated = True
+                
             elif format_type == discord.StickerFormatType.lottie:
-                # Lottie animations are JSON, but Discord also serves them as GIF
-                extension = 'gif'
-                urls = [
-                    self._get_sticker_url(str(sticker.id), 'gif'),  # Primary: GIF conversion
-                    self._get_sticker_url(str(sticker.id), 'json')  # Fallback: Original JSON
+                # Lottie animations - Discord converts to GIF for display
+                primary_url = self._get_sticker_url(str(sticker.id), 'png')  # Try PNG conversion first
+                fallback_urls = [
+                    self._get_sticker_url(str(sticker.id), 'gif'),   # GIF conversion
+                    self._get_sticker_url(str(sticker.id), 'json')   # Original Lottie JSON
                 ]
+                extension = 'png'
+                animated = True
+                
             else:
-                extension = 'png'  # Default fallback
-                urls = [self._get_sticker_url(str(sticker.id), 'png')]
+                # Unknown format - default to PNG
+                primary_url = self._get_sticker_url(str(sticker.id), 'png')
+                fallback_urls = []
+                extension = 'png'
+                animated = False
             
-            sticker_info.append({
+            sticker_data = {
                 'id': str(sticker.id),
                 'name': sticker.name,
                 'format': format_type,
+                'format_name': format_type.name if hasattr(format_type, 'name') else str(format_type),
                 'extension': extension,
-                'url': urls[0],  # Primary URL
-                'fallback_urls': urls[1:] if len(urls) > 1 else [],  # Alternative URLs
+                'url': primary_url,
+                'fallback_urls': fallback_urls,
+                'all_urls': [primary_url] + fallback_urls,
                 'description': getattr(sticker, 'description', ''),
                 'tags': getattr(sticker, 'tags', []),
-                'animated': format_type in [discord.StickerFormatType.apng, discord.StickerFormatType.lottie]
-            })
+                'animated': animated
+            }
+            
+            self.logger.debug(f"Sticker info: {sticker_data}")
+            sticker_info.append(sticker_data)
         
         return sticker_info
     
@@ -296,24 +313,39 @@ class EmojiStickerHandler:
                         inline=True
                     )
                 
-                # Add format info for debugging
-                embed.add_field(
-                    name="Format Info",
-                    value=f"Type: {sticker_info['format'].name if hasattr(sticker_info['format'], 'name') else str(sticker_info['format'])}, "
-                          f"Extension: {sticker_info.get('extension', 'unknown')}",
-                    inline=True
-                )
+                # Add format info for debugging (only in DEBUG mode)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    format_info = f"Type: {sticker_info.get('format_name', 'unknown')}, "
+                    format_info += f"Extension: {sticker_info.get('extension', 'unknown')}, "
+                    format_info += f"Animated: {sticker_info.get('animated', False)}"
+                    
+                    embed.add_field(
+                        name="Debug Info",
+                        value=format_info,
+                        inline=True
+                    )
+                    
+                    # Add all URLs for testing
+                    all_urls = sticker_info.get('all_urls', [sticker_url])
+                    if len(all_urls) > 1:
+                        embed.add_field(
+                            name="All URLs",
+                            value="\n".join([f"{i+1}. {url}" for i, url in enumerate(all_urls)]),
+                            inline=False
+                        )
             
             await target_channel.send(embed=embed)
             
             # Log sticker details
             sticker_details = []
             for s in sticker_info_list:
-                detail = f"{s['name']} (ID: {s['id']}, Format: {s['format']}, Animated: {s.get('animated', False)})"
-                detail += f", URLs: {[s['url']] + s.get('fallback_urls', [])}"
+                detail = f"{s['name']} (ID: {s['id']}, Format: {s.get('format_name', 'unknown')}, "
+                detail += f"Animated: {s.get('animated', False)}, Primary URL: {s['url']}"
+                if s.get('fallback_urls'):
+                    detail += f", Fallback URLs: {s['fallback_urls']}"
                 sticker_details.append(detail)
             
-            self.logger.debug(f"Sent sticker embed - Stickers: {sticker_details}")
+            self.logger.info(f"Sent sticker embed - Stickers: {sticker_details}")
             
             return True
             
