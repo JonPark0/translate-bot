@@ -60,22 +60,40 @@ class EmojiStickerHandler:
             # Determine format and URL
             format_type = getattr(sticker, 'format', discord.StickerFormatType.png)
             
+            # Generate multiple URLs for different formats to ensure compatibility
+            urls = []
+            
             if format_type == discord.StickerFormatType.png:
                 extension = 'png'
+                urls = [self._get_sticker_url(str(sticker.id), 'png')]
             elif format_type == discord.StickerFormatType.apng:
-                extension = 'png'  # APNG files are served as PNG from CDN
+                # APNG stickers can be accessed as multiple formats
+                extension = 'gif'  # Use GIF for better animation support
+                urls = [
+                    self._get_sticker_url(str(sticker.id), 'gif'),  # Primary: GIF for animation
+                    self._get_sticker_url(str(sticker.id), 'png')   # Fallback: Static PNG
+                ]
             elif format_type == discord.StickerFormatType.lottie:
-                extension = 'json'  # Lottie animations are JSON
+                # Lottie animations are JSON, but Discord also serves them as GIF
+                extension = 'gif'
+                urls = [
+                    self._get_sticker_url(str(sticker.id), 'gif'),  # Primary: GIF conversion
+                    self._get_sticker_url(str(sticker.id), 'json')  # Fallback: Original JSON
+                ]
             else:
                 extension = 'png'  # Default fallback
+                urls = [self._get_sticker_url(str(sticker.id), 'png')]
             
             sticker_info.append({
                 'id': str(sticker.id),
                 'name': sticker.name,
                 'format': format_type,
-                'url': self._get_sticker_url(str(sticker.id), extension),
+                'extension': extension,
+                'url': urls[0],  # Primary URL
+                'fallback_urls': urls[1:] if len(urls) > 1 else [],  # Alternative URLs
                 'description': getattr(sticker, 'description', ''),
-                'tags': getattr(sticker, 'tags', [])
+                'tags': getattr(sticker, 'tags', []),
+                'animated': format_type in [discord.StickerFormatType.apng, discord.StickerFormatType.lottie]
             })
         
         return sticker_info
@@ -245,16 +263,28 @@ class EmojiStickerHandler:
             for i, sticker_info in enumerate(sticker_info_list):
                 sticker_name = sticker_info['name']
                 sticker_url = sticker_info['url']
+                is_animated = sticker_info.get('animated', False)
+                fallback_urls = sticker_info.get('fallback_urls', [])
                 
                 # Set first sticker as main image
                 if i == 0:
                     embed.set_image(url=sticker_url)
-                    embed.set_footer(text=f"Sticker: {sticker_name}")
+                    footer_text = f"Sticker: {sticker_name}"
+                    if is_animated:
+                        footer_text += " (Animated)"
+                    embed.set_footer(text=footer_text)
                 else:
                     # Add additional stickers as fields
+                    sticker_links = [f"[View Sticker]({sticker_url})"]
+                    
+                    # Add fallback links for animated stickers
+                    if fallback_urls:
+                        for j, fallback_url in enumerate(fallback_urls):
+                            sticker_links.append(f"[Alt {j+1}]({fallback_url})")
+                    
                     embed.add_field(
-                        name=f"Sticker: {sticker_name}",
-                        value=f"[View Sticker]({sticker_url})",
+                        name=f"Sticker: {sticker_name}" + (" (Animated)" if is_animated else ""),
+                        value=" • ".join(sticker_links),
                         inline=True
                     )
                 
@@ -265,11 +295,24 @@ class EmojiStickerHandler:
                         value=sticker_info['description'][:100],  # Limit description length
                         inline=True
                     )
+                
+                # Add format info for debugging
+                embed.add_field(
+                    name="Format Info",
+                    value=f"Type: {sticker_info['format'].name if hasattr(sticker_info['format'], 'name') else str(sticker_info['format'])}, "
+                          f"Extension: {sticker_info.get('extension', 'unknown')}",
+                    inline=True
+                )
             
             await target_channel.send(embed=embed)
             
             # Log sticker details
-            sticker_details = [f"{s['name']} (ID: {s['id']}, Format: {s['format']})" for s in sticker_info_list]
+            sticker_details = []
+            for s in sticker_info_list:
+                detail = f"{s['name']} (ID: {s['id']}, Format: {s['format']}, Animated: {s.get('animated', False)})"
+                detail += f", URLs: {[s['url']] + s.get('fallback_urls', [])}"
+                sticker_details.append(detail)
+            
             self.logger.debug(f"Sent sticker embed - Stickers: {sticker_details}")
             
             return True
