@@ -48,6 +48,38 @@ class EmojiStickerHandler:
         extension = 'gif' if animated else 'png'
         return f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}"
     
+    def _get_sticker_url(self, sticker_id: str, format_type: str = 'png') -> str:
+        """Generate Discord CDN URL for sticker."""
+        # Discord stickers can be in different formats: png, apng, lottie
+        return f"https://cdn.discordapp.com/stickers/{sticker_id}.{format_type}"
+    
+    def get_sticker_info(self, stickers: List) -> List[Dict]:
+        """Get detailed info about stickers."""
+        sticker_info = []
+        for sticker in stickers:
+            # Determine format and URL
+            format_type = getattr(sticker, 'format', discord.StickerFormatType.png)
+            
+            if format_type == discord.StickerFormatType.png:
+                extension = 'png'
+            elif format_type == discord.StickerFormatType.apng:
+                extension = 'png'  # APNG files are served as PNG from CDN
+            elif format_type == discord.StickerFormatType.lottie:
+                extension = 'json'  # Lottie animations are JSON
+            else:
+                extension = 'png'  # Default fallback
+            
+            sticker_info.append({
+                'id': str(sticker.id),
+                'name': sticker.name,
+                'format': format_type,
+                'url': self._get_sticker_url(str(sticker.id), extension),
+                'description': getattr(sticker, 'description', ''),
+                'tags': getattr(sticker, 'tags', [])
+            })
+        
+        return sticker_info
+    
     def has_only_discord_emojis(self, content: str) -> bool:
         """Check if message contains only Discord custom emojis and whitespace."""
         if not content.strip():
@@ -190,10 +222,68 @@ class EmojiStickerHandler:
     async def _send_sticker_message(self, original_message: discord.Message,
                                   target_channel: discord.TextChannel,
                                   username: str, stickers: List) -> bool:
-        """Send sticker message with sticker info."""
+        """Send sticker message with sticker images using embeds."""
         try:
-            sticker_info = f"**{username}** sent a sticker"
+            sticker_info_list = self.get_sticker_info(stickers)
             content = original_message.content
+            
+            # Create embed for sticker display
+            embed = discord.Embed(
+                description=f"**{username}** sent sticker{'s' if len(stickers) > 1 else ''}:",
+                color=0x9966CC  # Purple color for stickers
+            )
+            
+            # Add text content if present
+            if content:
+                embed.add_field(
+                    name="Message",
+                    value=content,
+                    inline=False
+                )
+            
+            # Handle multiple stickers
+            for i, sticker_info in enumerate(sticker_info_list):
+                sticker_name = sticker_info['name']
+                sticker_url = sticker_info['url']
+                
+                # Set first sticker as main image
+                if i == 0:
+                    embed.set_image(url=sticker_url)
+                    embed.set_footer(text=f"Sticker: {sticker_name}")
+                else:
+                    # Add additional stickers as fields
+                    embed.add_field(
+                        name=f"Sticker: {sticker_name}",
+                        value=f"[View Sticker]({sticker_url})",
+                        inline=True
+                    )
+                
+                # Add description if available
+                if sticker_info['description']:
+                    embed.add_field(
+                        name=f"{sticker_name} Description",
+                        value=sticker_info['description'][:100],  # Limit description length
+                        inline=True
+                    )
+            
+            await target_channel.send(embed=embed)
+            
+            # Log sticker details
+            sticker_details = [f"{s['name']} (ID: {s['id']}, Format: {s['format']})" for s in sticker_info_list]
+            self.logger.debug(f"Sent sticker embed - Stickers: {sticker_details}")
+            
+            return True
+            
+        except Exception as e:
+            # Fallback to text-only message if embed fails
+            self.logger.warning(f"Sticker embed failed, using fallback: {e}")
+            return await self._send_sticker_fallback(target_channel, username, stickers, original_message.content)
+    
+    async def _send_sticker_fallback(self, target_channel: discord.TextChannel,
+                                   username: str, stickers: List, content: str = None) -> bool:
+        """Fallback method for sticker messages when embeds fail."""
+        try:
+            sticker_info = f"**{username}** sent sticker{'s' if len(stickers) > 1 else ''}"
             
             if content:
                 display_content = f"{sticker_info}: {content}"
@@ -202,16 +292,13 @@ class EmojiStickerHandler:
             
             # Add sticker names
             sticker_names = [sticker.name for sticker in stickers]
-            display_content += f" (Stickers: {', '.join(sticker_names)})"
+            display_content += f" ({', '.join(sticker_names)})"
             
             await target_channel.send(display_content)
             
-            # Log sticker details
-            sticker_details = [f"{s.name} (ID: {s.id})" for s in stickers]
-            self.logger.debug(f"Sent sticker message - Stickers: {sticker_details}")
-            
+            self.logger.debug(f"Sent sticker fallback message")
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to send sticker message: {e}")
+            self.logger.error(f"Failed to send sticker fallback message: {e}")
             return False
