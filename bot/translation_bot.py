@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from .translator import GeminiTranslator
 from .image_handler import ImageHandler
+from .emoji_sticker_handler import EmojiStickerHandler
 from utils.rate_limiter import RateLimiter
 from utils.cost_monitor import CostMonitor
 
@@ -23,6 +24,7 @@ class TranslationBot(commands.Bot):
         
         self.translator = GeminiTranslator(os.getenv('GEMINI_API_KEY'))
         self.image_handler = ImageHandler()
+        self.emoji_sticker_handler = EmojiStickerHandler()
         
         self.server_id = int(os.getenv('SERVER_ID'))
         self.channel_ids = {
@@ -70,6 +72,11 @@ class TranslationBot(commands.Bot):
     async def _process_message(self, message: discord.Message):
         source_channel = self.id_to_channel[message.channel.id]
         
+        # Check if message should skip translation (emoji/sticker only)
+        if self.emoji_sticker_handler.should_skip_translation(message):
+            await self._handle_emoji_sticker_only(message, source_channel)
+            return
+        
         if not await self.rate_limiter.acquire():
             self.logger.warning(f"Rate limit exceeded, skipping message from {message.author}")
             return
@@ -81,11 +88,14 @@ class TranslationBot(commands.Bot):
         has_text = message.content.strip()
         has_attachments = message.attachments
         has_embeds = message.embeds
+        has_stickers = message.stickers
         
-        if not (has_text or has_attachments or has_embeds):
+        if not (has_text or has_attachments or has_embeds or has_stickers):
             return
         
-        await self.cost_monitor.record_request()
+        # Only record cost for actual translation requests
+        if has_text and not self._is_command_or_link(message.content):
+            await self.cost_monitor.record_request()
         
         tasks = []
         
@@ -215,6 +225,22 @@ class TranslationBot(commands.Bot):
             
         except Exception as e:
             self.logger.error(f"Failed to send embed/link to {target_channel}: {e}")
+
+    async def _handle_emoji_sticker_only(self, message: discord.Message, source_channel: str):
+        """Handle messages that contain only emojis or stickers."""
+        try:
+            for target_channel in self.channel_ids.keys():
+                if target_channel != source_channel:
+                    channel_id = self.channel_ids[target_channel]
+                    channel = self.get_channel(channel_id)
+                    
+                    if channel:
+                        await self.emoji_sticker_handler.send_emoji_sticker_message(
+                            message, channel
+                        )
+                        
+        except Exception as e:
+            self.logger.error(f"Failed to handle emoji/sticker message: {e}")
 
     @commands.hybrid_command(name="status")
     async def status_command(self, ctx):

@@ -6,6 +6,7 @@ Multi-language real-time Discord translation bot powered by Google Gemini API.
 
 - ✨ **Real-time Translation**: Automatically translates messages between Korean, English, Japanese, and Chinese channels
 - 🖼️ **Image & File Support**: Shares images and files across all language channels
+- 😊 **Emoji & Sticker Support**: Discord custom emojis and stickers are shared without translation
 - 🔗 **Link & Embed Preservation**: Maintains Discord embeds and links across translations
 - 🛡️ **Mention Safety**: Prevents @everyone and @here from propagating across channels
 - 💰 **Cost Monitoring**: Built-in API cost tracking and limits
@@ -112,10 +113,12 @@ key/
 
 ## Translation Logic
 
-1. **Language Detection**: Automatically detects source language based on character analysis
-2. **Content Processing**: Cleans mentions and special Discord syntax before translation
-3. **Translation**: Uses Gemini API to translate to target languages
-4. **Post-processing**: Restores Discord formatting and sends to appropriate channels
+1. **Message Analysis**: Determines message type (text, emoji-only, sticker, attachment, embed)
+2. **Skip Translation**: Discord emojis (`<:name:id>`) and stickers are shared directly without translation
+3. **Language Detection**: Automatically detects source language for text content
+4. **Content Processing**: Cleans mentions and special Discord syntax before translation
+5. **Translation**: Uses Gemini 2.0 Flash to translate text to target languages
+6. **Post-processing**: Restores Discord formatting and sends to appropriate channels
 
 ## Safety Features
 
