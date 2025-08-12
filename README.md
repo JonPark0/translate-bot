@@ -15,23 +15,49 @@ Multi-language real-time Discord translation bot powered by Google Gemini API.
 
 ## Quick Start
 
-1. **Clone and Setup**
-   ```bash
-   git clone <repository-url>
-   cd key
-   cp .env.example .env
-   # Edit .env with your credentials
-   ```
+### 1. Discord Bot Setup
 
-2. **Run with Docker Compose**
-   ```bash
-   docker-compose up -d
-   ```
+**Create and Configure Bot:**
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications/)
+2. Create a new application → Add Bot
+3. Copy the Bot Token for your `.env` file
+4. Enable **Message Content Intent** under "Privileged Gateway Intents"
 
-3. **Check Status**
-   ```bash
-   curl http://localhost:8080/health
-   ```
+**Generate Bot Invite URL:**
+1. Go to **OAuth2** → **URL Generator**
+2. Select **Scopes:**
+   - ✅ `bot`
+   - ✅ `applications.commands`
+3. Select **Bot Permissions:**
+   - ✅ Send Messages
+   - ✅ Read Messages
+   - ✅ Read Message History
+   - ✅ Attach Files
+   - ✅ Embed Links
+   - ✅ Use Slash Commands
+   - ✅ **Use External Emojis** (Critical for emoji support)
+   - ✅ **Use External Stickers** (Critical for sticker support)
+4. Copy the generated URL and invite bot to your server
+
+### 2. Project Setup
+
+**Clone and Configure:**
+```bash
+git clone <repository-url>
+cd key
+cp .env.example .env
+# Edit .env with your Discord bot token and Gemini API key
+```
+
+**Run with Docker Compose:**
+```bash
+docker-compose up -d
+```
+
+**Check Status:**
+```bash
+curl http://localhost:8080/health
+```
 
 ## Configuration
 
@@ -160,7 +186,25 @@ Fatal error: [Errno 13] Permission denied: '/app/logs/key_bot.log'
   chmod -R 755 ./logs ./data
   ```
 
-#### 3. Gemini Model Not Found Error
+#### 3. Emojis and Stickers Not Displaying Properly
+```
+Message shows: "Username: :emoji_name:" instead of actual emoji
+```
+
+**Problem**: Bot lacks proper permissions to use emojis and stickers.
+
+**Solution**: Update bot permissions in Discord Developer Portal:
+1. Go to **OAuth2** → **URL Generator**
+2. Regenerate invite URL with these additional permissions:
+   - ✅ **Use External Emojis**
+   - ✅ **Use External Stickers**
+3. Re-invite bot to server with new permissions
+
+**Alternative**: Manually grant permissions in server:
+- Server Settings → Roles → Bot Role
+- Enable "Use External Emojis" and "Use External Stickers"
+
+#### 4. Gemini Model Not Found Error
 ```
 404 models/gemini-pro is not found for API version v1beta
 ```
@@ -170,7 +214,7 @@ Fatal error: [Errno 13] Permission denied: '/app/logs/key_bot.log'
 self.model = genai.GenerativeModel('gemini-2.0-flash')
 ```
 
-#### 4. Bot Not Visible in Discord Server
+#### 5. Bot Not Visible in Discord Server
 - Ensure bot is properly invited with correct permissions:
   - Send Messages
   - Read Messages
