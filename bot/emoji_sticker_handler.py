@@ -63,38 +63,43 @@ class EmojiStickerHandler:
             self.logger.debug(f"Processing sticker {sticker.name} (ID: {sticker.id}) - Format: {format_type}")
             
             # Determine the best URL format based on sticker type
+            # Strategy: Use GIF as primary for animated content, PNG for static
             if format_type == discord.StickerFormatType.png:
                 # Static PNG stickers
                 primary_url = self._get_sticker_url(str(sticker.id), 'png')
-                fallback_urls = []
+                fallback_urls = [
+                    self._get_sticker_url(str(sticker.id), 'gif')  # Sometimes PNG stickers have GIF versions too
+                ]
                 extension = 'png'
                 animated = False
                 
             elif format_type == discord.StickerFormatType.apng:
-                # Animated PNG stickers - try GIF first for better Discord support
-                primary_url = self._get_sticker_url(str(sticker.id), 'png') # Discord serves APNG as PNG with animation
+                # Animated PNG stickers - GIF first for reliable animation display
+                primary_url = self._get_sticker_url(str(sticker.id), 'gif')  # Primary: GIF for guaranteed animation
                 fallback_urls = [
-                    self._get_sticker_url(str(sticker.id), 'gif'),  # Alternative GIF version
+                    self._get_sticker_url(str(sticker.id), 'png')   # Fallback: Original APNG/static
                 ]
-                extension = 'png'  # Keep original extension
+                extension = 'gif'  # Use GIF extension for animated content
                 animated = True
                 
             elif format_type == discord.StickerFormatType.lottie:
-                # Lottie animations - Discord converts to GIF for display
-                primary_url = self._get_sticker_url(str(sticker.id), 'png')  # Try PNG conversion first
+                # Lottie animations - Discord always converts these to GIF for display
+                primary_url = self._get_sticker_url(str(sticker.id), 'gif')   # Primary: GIF conversion
                 fallback_urls = [
-                    self._get_sticker_url(str(sticker.id), 'gif'),   # GIF conversion
-                    self._get_sticker_url(str(sticker.id), 'json')   # Original Lottie JSON
+                    self._get_sticker_url(str(sticker.id), 'png'),   # Fallback: PNG conversion
+                    self._get_sticker_url(str(sticker.id), 'json')   # Last resort: Original Lottie JSON
                 ]
-                extension = 'png'
+                extension = 'gif'
                 animated = True
                 
             else:
-                # Unknown format - default to PNG
-                primary_url = self._get_sticker_url(str(sticker.id), 'png')
-                fallback_urls = []
-                extension = 'png'
-                animated = False
+                # Unknown format - try GIF first, then PNG
+                primary_url = self._get_sticker_url(str(sticker.id), 'gif')
+                fallback_urls = [
+                    self._get_sticker_url(str(sticker.id), 'png')
+                ]
+                extension = 'gif'
+                animated = True  # Assume animated if format is unknown
             
             sticker_data = {
                 'id': str(sticker.id),
@@ -354,26 +359,68 @@ class EmojiStickerHandler:
             self.logger.warning(f"Sticker embed failed, using fallback: {e}")
             return await self._send_sticker_fallback(target_channel, username, stickers, original_message.content)
     
+    async def _test_sticker_url(self, url: str) -> bool:
+        """Test if a sticker URL is accessible."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.head(url, timeout=aiohttp.ClientTimeout(total=3)) as response:
+                    return response.status == 200
+        except Exception as e:
+            self.logger.debug(f"URL test failed for {url}: {e}")
+            return False
+    
+    async def _get_working_sticker_url(self, sticker_info: Dict) -> str:
+        """Get the first working URL from sticker info."""
+        all_urls = sticker_info.get('all_urls', [sticker_info['url']])
+        
+        # Test URLs in order and return the first working one
+        for url in all_urls:
+            if await self._test_sticker_url(url):
+                self.logger.debug(f"Found working URL: {url}")
+                return url
+        
+        # If no URL works, return the primary URL anyway
+        self.logger.warning(f"No working URLs found for sticker {sticker_info['name']}, using primary URL")
+        return sticker_info['url']
+    
     async def _send_sticker_fallback(self, target_channel: discord.TextChannel,
                                    username: str, stickers: List, content: str = None) -> bool:
         """Fallback method for sticker messages when embeds fail."""
         try:
-            sticker_info = f"**{username}** sent sticker{'s' if len(stickers) > 1 else ''}"
+            # Get sticker info and try to send as individual images
+            sticker_info_list = self.get_sticker_info(stickers)
             
+            # Try sending each sticker as a separate message with direct URL
+            for sticker_info in sticker_info_list:
+                working_url = await self._get_working_sticker_url(sticker_info)
+                
+                fallback_message = f"**{username}** sent sticker: **{sticker_info['name']}**"
+                if content:
+                    fallback_message += f"\nMessage: {content}"
+                
+                fallback_message += f"\nSticker URL: {working_url}"
+                
+                # Add format info
+                if sticker_info.get('animated'):
+                    fallback_message += " (Animated)"
+                
+                await target_channel.send(fallback_message)
+            
+            self.logger.debug(f"Sent sticker fallback with URLs")
+            return True
+            
+        except Exception as e:
+            # Last resort: text-only fallback
+            self.logger.error(f"Advanced fallback failed, using basic text: {e}")
+            
+            sticker_info = f"**{username}** sent sticker{'s' if len(stickers) > 1 else ''}"
             if content:
                 display_content = f"{sticker_info}: {content}"
             else:
                 display_content = sticker_info
             
-            # Add sticker names
             sticker_names = [sticker.name for sticker in stickers]
             display_content += f" ({', '.join(sticker_names)})"
             
             await target_channel.send(display_content)
-            
-            self.logger.debug(f"Sent sticker fallback message")
             return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to send sticker fallback message: {e}")
-            return False
