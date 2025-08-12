@@ -8,23 +8,30 @@ class EmojiStickerHandler:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Discord custom emoji pattern: <:name:id> or <a:name:id>
-        self.custom_emoji_pattern = re.compile(r'<a?:[a-zA-Z0-9_]+:\d+>')
+        # Discord custom emoji patterns
+        self.custom_emoji_pattern = re.compile(r'<a?:[a-zA-Z0-9_]+:\d+>')  # <:name:id> or <a:name:id>
+        self.text_emoji_pattern = re.compile(r':[a-zA-Z0-9_]+:')  # :emoji_name:
     
     def extract_discord_emojis(self, content: str) -> List[str]:
         """Extract Discord custom emojis from message content."""
-        return self.custom_emoji_pattern.findall(content)
+        emojis = []
+        # Custom emojis with ID: <:name:id> or <a:name:id>
+        emojis.extend(self.custom_emoji_pattern.findall(content))
+        # Text-format emojis: :emoji_name:
+        emojis.extend(self.text_emoji_pattern.findall(content))
+        return emojis
     
     def has_only_discord_emojis(self, content: str) -> bool:
         """Check if message contains only Discord custom emojis and whitespace."""
         if not content.strip():
             return False
         
-        # Remove all Discord emojis and check if anything meaningful remains
-        content_no_emojis = self.custom_emoji_pattern.sub('', content)
+        # Remove all Discord emojis (both formats) and check if anything meaningful remains
+        content_no_custom = self.custom_emoji_pattern.sub('', content)
+        content_no_text = self.text_emoji_pattern.sub('', content_no_custom)
         
         # If only whitespace remains, it's emoji-only
-        return not content_no_emojis.strip()
+        return not content_no_text.strip()
     
     def has_stickers(self, message: discord.Message) -> bool:
         """Check if message has stickers."""
@@ -66,8 +73,13 @@ class EmojiStickerHandler:
             
             # Prepare message content
             if content and self.has_only_discord_emojis(content):
-                # For Discord emoji-only messages, send as regular message with username
+                # Try to preserve emojis as much as possible
                 display_content = f"**{username}**: {content}"
+                
+                # Log emoji details for debugging
+                emoji_info = self.get_emoji_info(content)
+                self.logger.debug(f"Emoji message - Content: '{content}', Emojis: {emoji_info['emoji_list']}")
+                
             elif stickers:
                 # For sticker messages, mention the sticker
                 sticker_info = f"**{username}** sent a sticker"
@@ -75,6 +87,10 @@ class EmojiStickerHandler:
                     display_content = f"{sticker_info}: {content}"
                 else:
                     display_content = sticker_info
+                    
+                # Log sticker details
+                sticker_names = [f"{s.name} (ID: {s.id})" for s in stickers]
+                self.logger.debug(f"Sticker message - Stickers: {sticker_names}")
             else:
                 return False
             
@@ -88,7 +104,7 @@ class EmojiStickerHandler:
             
             await target_channel.send(**message_kwargs)
             
-            self.logger.debug(f"Sent emoji/sticker message to {target_channel.name}")
+            self.logger.debug(f"Sent emoji/sticker message to {target_channel.name}: {display_content[:50]}...")
             return True
             
         except Exception as e:
