@@ -64,8 +64,8 @@ class GeminiTranslator:
             
             source_lang = self._detect_language(text)
             
-            if source_lang == target_language:
-                return None
+            # Allow translation even if detected language matches target language
+            # This handles cross-language input in channels (e.g., English in Korean channel)
             
             clean_text = self._clean_mentions(text)
             
@@ -74,6 +74,9 @@ class GeminiTranslator:
             Keep the tone and style natural.
             Do not translate proper nouns, usernames, or technical terms unless necessary.
             If the text contains links or commands, preserve them exactly.
+            
+            If the text is already in {self.language_names[target_language]}, return it as-is without changes.
+            If the text is mixed languages, translate only the parts that need translation.
             
             Text to translate: {clean_text}
             
