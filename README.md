@@ -2,6 +2,8 @@
 
 Multi-language real-time Discord translation bot powered by Google Gemini API.
 
+> 🇰🇷 **한국어 문서**: [README.ko.md](README.ko.md)를 참조하세요.
+
 ## Features
 
 - ✨ **Real-time Translation**: Automatically translates messages between Korean, English, Japanese, and Chinese channels
@@ -12,6 +14,9 @@ Multi-language real-time Discord translation bot powered by Google Gemini API.
 - 💰 **Cost Monitoring**: Built-in API cost tracking and limits
 - ⚡ **Rate Limiting**: Configurable request limits to prevent API abuse
 - 🏥 **Health Monitoring**: HTTP health endpoints for monitoring bot status
+- 🗑️ **Message Synchronization**: Automatically deletes translated messages when original is deleted
+- ✏️ **Edit Synchronization**: Updates translated messages in place when original is edited
+- 💬 **Reply Support**: Maintains reply chains across language channels
 
 ## Quick Start
 
@@ -109,6 +114,7 @@ docker-compose up -d --build
 
 - `/status` - Check bot status, rate limits, and cost monitoring
 - `/help` - Show help information
+- `/test_logging` - Test all logging levels (Admin only)
 
 ## Monitoring
 
@@ -131,7 +137,8 @@ key/
 ├── utils/
 │   ├── logger.py          # Logging setup
 │   ├── rate_limiter.py    # Rate limiting logic
-│   └── cost_monitor.py    # API cost tracking
+│   ├── cost_monitor.py    # API cost tracking
+│   └── message_tracker.py # Message relationship tracking
 ├── docker-compose.yml     # Docker composition
 ├── Dockerfile            # Container definition
 └── requirements.txt      # Python dependencies
@@ -145,6 +152,8 @@ key/
 4. **Content Processing**: Cleans mentions and special Discord syntax before translation
 5. **Translation**: Uses Gemini 2.0 Flash to translate text to target languages
 6. **Post-processing**: Restores Discord formatting and sends to appropriate channels
+7. **Message Tracking**: Records relationships between original and translated messages
+8. **Synchronization**: Handles message deletions, edits, and reply chains across channels
 
 ## Safety Features
 
@@ -204,7 +213,19 @@ Message shows: "Username: :emoji_name:" instead of actual emoji
 - Server Settings → Roles → Bot Role
 - Enable "Use External Emojis" and "Use External Stickers"
 
-#### 4. Gemini Model Not Found Error
+#### 4. Animated Stickers Not Displaying
+```
+Animated stickers appear as static images or broken links
+```
+
+**Problem**: Discord CDN URL format varies for animated stickers.
+
+**Solution**: The bot automatically tries multiple URL formats:
+- Primary: `https://cdn.discordapp.com/stickers/{id}.gif`
+- Fallbacks: `.webp`, `.png`, alternative CDN paths
+- Check logs for URL testing results with DEBUG level logging
+
+#### 5. Gemini Model Not Found Error
 ```
 404 models/gemini-pro is not found for API version v1beta
 ```
@@ -214,7 +235,7 @@ Message shows: "Username: :emoji_name:" instead of actual emoji
 self.model = genai.GenerativeModel('gemini-2.0-flash')
 ```
 
-#### 5. Bot Not Visible in Discord Server
+#### 6. Bot Not Visible in Discord Server
 - Ensure bot is properly invited with correct permissions:
   - Send Messages
   - Read Messages
