@@ -115,7 +115,7 @@ class TranslationBot(commands.Bot):
             self.logger.info(f"✅ Deleted {len(mapping.translated_messages)} translated messages")
 
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        """Handle message editing - update translated messages."""
+        """Handle message editing - update translated messages in place."""
         if after.guild.id != self.server_id:
             return
         
@@ -131,20 +131,17 @@ class TranslationBot(commands.Bot):
         # Get existing mapping
         mapping = await self.message_tracker.get_mapping(after.id)
         if mapping:
-            # Delete old translated messages
-            await self._delete_translated_messages(mapping)
+            # Edit existing translated messages in place
+            updated_messages = await self._edit_translated_messages(after, mapping, source_channel)
             
-            # Re-translate and create new messages
-            new_translated_messages = await self._retranslate_message(after, source_channel)
-            
-            # Update mapping
-            if new_translated_messages:
+            # Update mapping with new content
+            if updated_messages:
                 await self.message_tracker.update_mapping(
                     after.id, 
-                    new_translated_messages, 
+                    updated_messages, 
                     after.content
                 )
-                self.logger.info(f"✅ Updated {len(new_translated_messages)} translated messages")
+                self.logger.info(f"✅ Edited {len(updated_messages)} translated messages in place")
 
     async def _process_message(self, message: discord.Message):
         source_channel = self.id_to_channel[message.channel.id]
@@ -545,6 +542,54 @@ class TranslationBot(commands.Bot):
         except Exception as e:
             self.logger.error(f"❌ Failed to send translation to {target_channel}: {e}")
             return None
+
+    async def _edit_translated_messages(self, edited_message: discord.Message, 
+                                      mapping, source_channel: str) -> Dict[str, int]:
+        """Edit existing translated messages in place to maintain order."""
+        updated_messages = {}
+        
+        try:
+            # Only handle text translation edits for now
+            if edited_message.content and not self._is_command_or_link(edited_message.content):
+                translations = await self.translator.translate_to_all_languages(
+                    edited_message.content, source_channel
+                )
+                
+                for target_channel, translated_text in translations.items():
+                    if translated_text and target_channel in mapping.translated_messages:
+                        try:
+                            # Get the existing translated message
+                            channel_id = self.channel_ids[target_channel]
+                            channel = self.get_channel(channel_id)
+                            if channel:
+                                message_id = mapping.translated_messages[target_channel]
+                                existing_message = await channel.fetch_message(message_id)
+                                
+                                # Create updated embed
+                                username = edited_message.author.display_name
+                                embed = discord.Embed(
+                                    description=translated_text,
+                                    color=0x7289DA
+                                )
+                                embed.set_author(
+                                    name=username,
+                                    icon_url=edited_message.author.display_avatar.url
+                                )
+                                
+                                # Edit the existing message
+                                await existing_message.edit(embed=embed)
+                                updated_messages[target_channel] = message_id
+                                self.logger.debug(f"✏️ Edited message in {target_channel}: {message_id}")
+                                
+                        except discord.NotFound:
+                            self.logger.warning(f"⚠️ Translated message not found for editing: {message_id}")
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to edit translated message in {target_channel}: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to edit translated messages: {e}")
+        
+        return updated_messages
 
     async def _send_translation_with_reply(self, original_message: discord.Message, 
                                          target_channel: str, translated_text: str,

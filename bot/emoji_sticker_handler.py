@@ -267,6 +267,14 @@ class EmojiStickerHandler:
             sticker_info_list = self.get_sticker_info(stickers)
             content = original_message.content
             
+            # Test URLs and find working ones for each sticker
+            working_stickers = []
+            for sticker_info in sticker_info_list:
+                working_url = await self._get_working_sticker_url(sticker_info)
+                sticker_info['working_url'] = working_url
+                working_stickers.append(sticker_info)
+                self.logger.debug(f"Using URL for {sticker_info['name']}: {working_url}")
+            
             # Create embed for sticker display
             embed = discord.Embed(
                 description=f"**{username}** sent sticker{'s' if len(stickers) > 1 else ''}:",
@@ -282,9 +290,9 @@ class EmojiStickerHandler:
                 )
             
             # Handle multiple stickers
-            for i, sticker_info in enumerate(sticker_info_list):
+            for i, sticker_info in enumerate(working_stickers):
                 sticker_name = sticker_info['name']
-                sticker_url = sticker_info['url']
+                sticker_url = sticker_info['working_url']  # Use the tested working URL
                 is_animated = sticker_info.get('animated', False)
                 fallback_urls = sticker_info.get('fallback_urls', [])
                 
@@ -362,26 +370,80 @@ class EmojiStickerHandler:
     async def _test_sticker_url(self, url: str) -> bool:
         """Test if a sticker URL is accessible."""
         try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
             async with aiohttp.ClientSession() as session:
-                async with session.head(url, timeout=aiohttp.ClientTimeout(total=3)) as response:
-                    return response.status == 200
+                # Try HEAD request first (faster)
+                try:
+                    async with session.head(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            return True
+                except:
+                    pass
+                
+                # If HEAD fails, try GET request (some servers don't support HEAD)
+                try:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        return response.status == 200
+                except:
+                    pass
+                    
+            return False
         except Exception as e:
             self.logger.debug(f"URL test failed for {url}: {e}")
             return False
     
     async def _get_working_sticker_url(self, sticker_info: Dict) -> str:
         """Get the first working URL from sticker info."""
-        all_urls = sticker_info.get('all_urls', [sticker_info['url']])
+        sticker_id = sticker_info['id']
+        sticker_name = sticker_info['name']
+        is_animated = sticker_info.get('animated', False)
+        
+        # Enhanced URL list with more variations for animated stickers
+        test_urls = []
+        
+        if is_animated:
+            # For animated stickers, try multiple formats in this order:
+            test_urls.extend([
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.gif",     # Primary for animated
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.webp",    # Modern format
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.png",     # Static fallback
+                f"https://media.discordapp.net/stickers/{sticker_id}.gif",   # Alternative CDN
+                f"https://media.discordapp.net/stickers/{sticker_id}.webp",  # Alternative CDN
+                f"https://media.discordapp.net/stickers/{sticker_id}.png"    # Alternative CDN static
+            ])
+        else:
+            # For static stickers
+            test_urls.extend([
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.png",     # Primary for static
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.webp",    # Modern format
+                f"https://cdn.discordapp.com/stickers/{sticker_id}.gif",     # Might have GIF version
+                f"https://media.discordapp.net/stickers/{sticker_id}.png",   # Alternative CDN
+                f"https://media.discordapp.net/stickers/{sticker_id}.webp",  # Alternative CDN
+                f"https://media.discordapp.net/stickers/{sticker_id}.gif"    # Alternative CDN gif
+            ])
+        
+        # Include original URLs from sticker_info
+        original_urls = sticker_info.get('all_urls', [sticker_info['url']])
+        for url in original_urls:
+            if url not in test_urls:
+                test_urls.append(url)
+        
+        self.logger.debug(f"Testing {len(test_urls)} URLs for sticker {sticker_name} (animated: {is_animated})")
         
         # Test URLs in order and return the first working one
-        for url in all_urls:
+        for i, url in enumerate(test_urls):
+            self.logger.debug(f"Testing URL {i+1}/{len(test_urls)}: {url}")
             if await self._test_sticker_url(url):
-                self.logger.debug(f"Found working URL: {url}")
+                self.logger.info(f"✅ Found working URL for {sticker_name}: {url}")
                 return url
         
         # If no URL works, return the primary URL anyway
-        self.logger.warning(f"No working URLs found for sticker {sticker_info['name']}, using primary URL")
-        return sticker_info['url']
+        primary_url = sticker_info['url']
+        self.logger.warning(f"⚠️ No working URLs found for sticker {sticker_name}, using primary URL: {primary_url}")
+        return primary_url
     
     async def _send_sticker_fallback(self, target_channel: discord.TextChannel,
                                    username: str, stickers: List, content: str = None) -> bool:
