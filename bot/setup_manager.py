@@ -699,8 +699,10 @@ class SetupManager:
         # Show music config if selected
         if 'music' in features:
             music_config = session.data['music_config']
-            music_info = f"명령어 채널: {'모든 채널' if not music_config['command_channel_id'] else f'<#{music_config[\"command_channel_id\"]}>'}\n"
-            music_info += f"음성 채널: {'자동 감지' if not music_config['voice_channel_id'] else f'<#{music_config[\"voice_channel_id\"]}>'}"
+            command_channel_text = '모든 채널' if not music_config['command_channel_id'] else f"<#{music_config['command_channel_id']}>"
+            voice_channel_text = '자동 감지' if not music_config['voice_channel_id'] else f"<#{music_config['voice_channel_id']}>"
+            music_info = f"명령어 채널: {command_channel_text}\n"
+            music_info += f"음성 채널: {voice_channel_text}"
             
             embed.add_field(
                 name="음악 설정",
