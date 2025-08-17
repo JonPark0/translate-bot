@@ -769,7 +769,7 @@ class SetupManager:
             
             embed.add_field(
                 name="다음 단계",
-                value="이제 봇의 모든 기능을 사용할 수 있습니다. `/help` 명령어로 사용 가능한 명령어를 확인하세요.",
+                value="이제 봇의 모든 기능을 사용할 수 있습니다. `/keyhelp` 명령어로 사용 가능한 명령어를 확인하세요.",
                 inline=False
             )
             

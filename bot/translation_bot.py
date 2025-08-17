@@ -56,8 +56,8 @@ class TranslationBot(commands.Bot):
             """Show bot status for this server"""
             await self._show_status(ctx)
         
-        @self.command(name='help')
-        async def help_command(ctx):
+        @self.command(name='keyhelp')
+        async def keyhelp_command(ctx):
             """Show help information"""
             await self._show_help(ctx)
         
@@ -103,7 +103,7 @@ class TranslationBot(commands.Bot):
                 
                 embed.add_field(
                     name="📚 도움말",
-                    value="`/help` 명령어로 사용 가능한 기능을 확인하세요.",
+                    value="`/keyhelp` 명령어로 사용 가능한 기능을 확인하세요.",
                     inline=False
                 )
                 
@@ -506,6 +506,12 @@ class TranslationBot(commands.Bot):
         embed.add_field(
             name="📊 상태 확인",
             value="`/status` - 현재 서버의 봇 설정 상태 확인",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📚 도움말",
+            value="`/keyhelp` - 이 도움말 메시지 표시",
             inline=False
         )
         
