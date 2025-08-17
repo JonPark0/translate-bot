@@ -40,37 +40,27 @@ class TranslationBot(commands.Bot):
         # Processing state
         self.processing_messages: Set[int] = set()
         
-        # Register commands
-        self._register_commands()
+        # Slash commands will be registered in on_ready
     
-    def _register_commands(self):
-        """Register bot commands"""
-        
-        @self.command(name='init')
-        async def init_command(ctx):
-            """Initialize bot configuration for this server"""
-            await self.setup_manager.start_setup(ctx)
-        
-        @self.command(name='status')
-        async def status_command(ctx):
-            """Show bot status for this server"""
-            await self._show_status(ctx)
-        
-        @self.command(name='keyhelp')
-        async def keyhelp_command(ctx):
-            """Show help information"""
-            await self._show_help(ctx)
-        
-        @self.command(name='test_logging')
-        @commands.has_permissions(administrator=True)
-        async def test_logging_command(ctx):
-            """Test all logging levels (Admin only)"""
-            await self._test_logging(ctx)
+    async def _register_commands(self):
+        """Register slash commands"""
+        # Load slash commands cog
+        await self.load_extension('bot.slash_commands')
     
     async def on_ready(self):
         """Bot ready event"""
         self.logger.info(f"🤖 Bot logged in as {self.user} (ID: {self.user.id})")
         self.logger.info(f"🌐 Connected to {len(self.guilds)} guilds")
+        
+        # Register slash commands
+        await self._register_commands()
+        
+        # Sync slash commands
+        try:
+            synced = await self.tree.sync()
+            self.logger.info(f"✅ Synced {len(synced)} slash commands")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to sync slash commands: {e}")
         
         # Load configurations for all guilds
         await self._load_all_guild_configs()
@@ -432,120 +422,7 @@ class TranslationBot(commands.Bot):
         
         return len(words) > 0 and (link_count / len(words)) > 0.5
     
-    # Command implementations
-    
-    async def _show_status(self, ctx):
-        """Show bot status for this server"""
-        guild_config = await self._get_guild_config(ctx.guild.id)
-        
-        if not guild_config:
-            embed = discord.Embed(
-                title="❌ 봇이 설정되지 않음",
-                description="`/init` 명령어를 사용하여 봇을 설정해주세요.",
-                color=0xFF0000
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        embed = discord.Embed(
-            title=f"📊 {ctx.guild.name} 봇 상태",
-            color=0x00FF00
-        )
-        
-        # Show enabled features
-        features = []
-        if guild_config.is_feature_enabled(FeatureType.TRANSLATION):
-            features.append("🌐 번역")
-        if guild_config.is_feature_enabled(FeatureType.TTS):
-            features.append("🔊 TTS")
-        if guild_config.is_feature_enabled(FeatureType.MUSIC):
-            features.append("🎵 음악")
-        
-        embed.add_field(
-            name="활성화된 기능",
-            value=" | ".join(features) if features else "없음",
-            inline=False
-        )
-        
-        # Show translation channels if enabled
-        if guild_config.is_feature_enabled(FeatureType.TRANSLATION):
-            translation_configs = await db_service.get_translation_configs(ctx.guild.id)
-            if translation_configs:
-                channel_info = []
-                for config in translation_configs:
-                    channel_info.append(f"{config.language_name}: <#{config.channel_id}>")
-                
-                embed.add_field(
-                    name="번역 채널",
-                    value="\n".join(channel_info),
-                    inline=False
-                )
-        
-        embed.add_field(
-            name="초기화 상태",
-            value="✅ 완료" if guild_config.is_initialized else "❌ 미완료",
-            inline=True
-        )
-        
-        await ctx.send(embed=embed)
-    
-    async def _show_help(self, ctx):
-        """Show help information"""
-        embed = discord.Embed(
-            title="📚 케이 봇 도움말",
-            description="다국어 실시간 번역, TTS, 음악 재생 봇",
-            color=0x7289DA
-        )
-        
-        embed.add_field(
-            name="🚀 초기 설정",
-            value="`/init` - 봇 초기 설정 (관리자 권한 필요)",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📊 상태 확인",
-            value="`/status` - 현재 서버의 봇 설정 상태 확인",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📚 도움말",
-            value="`/keyhelp` - 이 도움말 메시지 표시",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🔧 관리자 명령어",
-            value="`/test_logging` - 로깅 레벨 테스트 (관리자 전용)",
-            inline=False
-        )
-        
-        guild_config = await self._get_guild_config(ctx.guild.id)
-        if guild_config and guild_config.is_initialized:
-            embed.add_field(
-                name="✅ 현재 상태",
-                value="봇이 설정되어 있습니다. 설정된 기능을 사용할 수 있습니다.",
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="⚠️ 설정 필요",
-                value="`/init` 명령어로 봇을 설정해주세요.",
-                inline=False
-            )
-        
-        await ctx.send(embed=embed)
-    
-    async def _test_logging(self, ctx):
-        """Test all logging levels"""
-        self.logger.debug("🔍 DEBUG: Test debug message")
-        self.logger.info("ℹ️ INFO: Test info message")
-        self.logger.warning("⚠️ WARNING: Test warning message")
-        self.logger.error("❌ ERROR: Test error message")
-        self.logger.critical("🚨 CRITICAL: Test critical message")
-        
-        await ctx.send("✅ 모든 로깅 레벨 테스트 완료. 로그 파일을 확인하세요.")
+    # Command implementations moved to slash_commands.py
     
     # Helper methods for message editing/deletion
     

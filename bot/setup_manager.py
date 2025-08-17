@@ -70,7 +70,7 @@ class SetupManager:
             'vi': 'Tiếng Việt (Vietnamese)'
         }
     
-    async def start_setup(self, ctx: commands.Context) -> bool:
+    async def start_setup(self, ctx) -> bool:
         """Start the setup process for a guild"""
         guild_id = ctx.guild.id
         user_id = ctx.author.id
