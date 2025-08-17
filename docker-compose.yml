@@ -1,5 +1,30 @@
 
+version: '3.8'
+
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: key-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-keybot}
+      POSTGRES_USER: ${DB_USER:-keybot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-keybot} -d ${DB_NAME:-keybot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - key-bot-network
+
   key-bot:
     build:
       context: .
@@ -8,20 +33,28 @@ services:
     restart: unless-stopped
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - SERVER_ID=${SERVER_ID}
-      - KOREAN_CHANNEL_ID=${KOREAN_CHANNEL_ID}
-      - ENGLISH_CHANNEL_ID=${ENGLISH_CHANNEL_ID}
-      - JAPANESE_CHANNEL_ID=${JAPANESE_CHANNEL_ID}
-      - CHINESE_CHANNEL_ID=${CHINESE_CHANNEL_ID}
-      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
-      - MAX_DAILY_REQUESTS=${MAX_DAILY_REQUESTS:-1000}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-keybot}
+      - DB_USER=${DB_USER:-keybot}
+      - DB_PASSWORD=${DB_PASSWORD}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - key_logs:/app/logs
+      - key_data:/app/data
+    ports:
+      - "8080:8080"
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - key-bot-network
 
@@ -30,5 +63,6 @@ networks:
     driver: bridge
 
 volumes:
-  logs:
-  data:
+  postgres_data:
+  key_logs:
+  key_data:

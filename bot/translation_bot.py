@@ -1,8 +1,11 @@
-import os
+"""
+Multi-server Translation Bot with Database Support
+Enhanced Key Translation Bot with /init setup system
+"""
+
 import logging
 import asyncio
-from typing import Dict, Optional, Set
-from pathlib import Path
+from typing import Dict, Optional, Set, Any
 
 import discord
 from discord.ext import commands
@@ -10,631 +13,622 @@ from discord.ext import commands
 from .translator import GeminiTranslator
 from .image_handler import ImageHandler
 from .emoji_sticker_handler import EmojiStickerHandler
-from utils.rate_limiter import RateLimiter
-from utils.cost_monitor import CostMonitor
-from utils.message_tracker import MessageTracker
+from .setup_manager import SetupManager
+from utils.message_tracker_db import DatabaseMessageTracker
+from database.service import db_service
+from database.models import GuildConfig, FeatureType
 
 
 class TranslationBot(commands.Bot):
-    def __init__(self, rate_limiter: RateLimiter, cost_monitor: CostMonitor, *args, **kwargs):
+    """Multi-server translation bot with database configuration"""
+    
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         self.logger = logging.getLogger(__name__)
-        self.rate_limiter = rate_limiter
-        self.cost_monitor = cost_monitor
         
-        self.translator = GeminiTranslator(os.getenv('GEMINI_API_KEY'))
+        # Core components
         self.image_handler = ImageHandler()
         self.emoji_sticker_handler = EmojiStickerHandler()
-        self.message_tracker = MessageTracker()
+        self.setup_manager = SetupManager(self)
         
-        self.server_id = int(os.getenv('SERVER_ID'))
-        self.channel_ids = {
-            'korean': int(os.getenv('KOREAN_CHANNEL_ID')),
-            'english': int(os.getenv('ENGLISH_CHANNEL_ID')),
-            'japanese': int(os.getenv('JAPANESE_CHANNEL_ID')),
-            'chinese': int(os.getenv('CHINESE_CHANNEL_ID'))
-        }
+        # Guild-specific data (cached from database)
+        self.guild_configs: Dict[int, GuildConfig] = {}
+        self.guild_translators: Dict[int, GeminiTranslator] = {}
+        self.guild_trackers: Dict[int, DatabaseMessageTracker] = {}
         
-        self.id_to_channel = {v: k for k, v in self.channel_ids.items()}
-        
+        # Processing state
         self.processing_messages: Set[int] = set()
+        
+        # Register commands
+        self._register_commands()
+    
+    def _register_commands(self):
+        """Register bot commands"""
+        
+        @self.command(name='init')
+        async def init_command(ctx):
+            """Initialize bot configuration for this server"""
+            await self.setup_manager.start_setup(ctx)
+        
+        @self.command(name='status')
+        async def status_command(ctx):
+            """Show bot status for this server"""
+            await self._show_status(ctx)
+        
+        @self.command(name='help')
+        async def help_command(ctx):
+            """Show help information"""
+            await self._show_help(ctx)
+        
+        @self.command(name='test_logging')
+        @commands.has_permissions(administrator=True)
+        async def test_logging_command(ctx):
+            """Test all logging levels (Admin only)"""
+            await self._test_logging(ctx)
     
     async def on_ready(self):
+        """Bot ready event"""
         self.logger.info(f"🤖 Bot logged in as {self.user} (ID: {self.user.id})")
-        self.logger.info(f"🎯 Monitoring server ID: {self.server_id}")
-        self.logger.info(f"🌐 Translation channels: {self.channel_ids}")
+        self.logger.info(f"🌐 Connected to {len(self.guilds)} guilds")
         
-        # Test logging at startup to verify all levels work
-        self.logger.debug("🔍 DEBUG test: Bot initialization debug info")
-        self.logger.warning("⚠️ WARNING test: This is a startup warning test")
+        # Load configurations for all guilds
+        await self._load_all_guild_configs()
         
-        try:
-            synced = await self.tree.sync()
-            self.logger.info(f"✅ Synced {len(synced)} slash commands")
+        # Test logging at startup
+        self.logger.debug("🔍 DEBUG: Bot initialization debug info")
+        self.logger.warning("⚠️ WARNING: Startup warning test")
+        self.logger.critical("🚨 CRITICAL: Startup critical test")
+        
+        self.logger.info("✅ Bot is ready and operational!")
+    
+    async def on_guild_join(self, guild):
+        """Handle bot joining a new guild"""
+        self.logger.info(f"🏠 Joined new guild: {guild.name} (ID: {guild.id})")
+        
+        # Send welcome message to the first available text channel
+        for channel in guild.text_channels:
+            if channel.permissions_for(guild.me).send_messages:
+                embed = discord.Embed(
+                    title="🎉 케이 봇에 오신 것을 환영합니다!",
+                    description="다국어 실시간 번역, TTS, 음악 재생 기능을 제공하는 봇입니다.",
+                    color=0x00FF00
+                )
+                
+                embed.add_field(
+                    name="🚀 시작하기",
+                    value="`/init` 명령어를 사용하여 봇을 설정해주세요.",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="📚 도움말",
+                    value="`/help` 명령어로 사용 가능한 기능을 확인하세요.",
+                    inline=False
+                )
+                
+                try:
+                    await channel.send(embed=embed)
+                    break
+                except discord.Forbidden:
+                    continue
+    
+    async def on_guild_remove(self, guild):
+        """Handle bot leaving a guild"""
+        self.logger.info(f"👋 Left guild: {guild.name} (ID: {guild.id})")
+        
+        # Clean up cached data
+        if guild.id in self.guild_configs:
+            del self.guild_configs[guild.id]
+        if guild.id in self.guild_translators:
+            del self.guild_translators[guild.id]
+        if guild.id in self.guild_trackers:
+            del self.guild_trackers[guild.id]
+    
+    async def on_message(self, message):
+        """Handle incoming messages"""
+        # Process commands first
+        await self.process_commands(message)
+        
+        # Handle setup responses
+        if await self.setup_manager.handle_setup_response(message):
+            return
+        
+        # Skip bot messages and DMs
+        if message.author.bot or not message.guild:
+            return
+        
+        # Check if guild is configured for translation
+        guild_config = await self._get_guild_config(message.guild.id)
+        if not guild_config or not guild_config.is_feature_enabled(FeatureType.TRANSLATION):
+            return
+        
+        # Process translation
+        await self._process_message(message)
+    
+    async def on_message_delete(self, message):
+        """Handle message deletion - sync delete translated messages"""
+        if message.author.bot or not message.guild:
+            return
+        
+        guild_config = await self._get_guild_config(message.guild.id)
+        if not guild_config or not guild_config.is_feature_enabled(FeatureType.TRANSLATION):
+            return
+        
+        # Get message tracker for this guild
+        tracker = await self._get_message_tracker(message.guild.id)
+        if not tracker:
+            return
+        
+        # Check if this message has translations
+        mapping = await tracker.get_mapping(message.id)
+        if mapping:
+            self.logger.info(f"🗑️ Message deleted in {message.guild.name}: {message.id}")
             
-            # Verify channel access
-            accessible_channels = 0
-            for channel_name, channel_id in self.channel_ids.items():
-                channel = self.get_channel(channel_id)
-                if channel:
-                    accessible_channels += 1
-                    self.logger.debug(f"✅ Channel access confirmed: {channel_name} ({channel.name})")
+            # Delete translated messages
+            await self._delete_translated_messages(mapping, message.guild.id)
+            
+            # Remove mapping
+            await tracker.remove_mapping(message.id)
+            
+            self.logger.info(f"✅ Deleted {len(mapping.translated_messages)} translated messages")
+    
+    async def on_message_edit(self, before, after):
+        """Handle message editing - update translated messages in place"""
+        if after.author.bot or not after.guild:
+            return
+        
+        guild_config = await self._get_guild_config(after.guild.id)
+        if not guild_config or not guild_config.is_feature_enabled(FeatureType.TRANSLATION):
+            return
+        
+        # Get channel mapping for this guild
+        channel_mapping = await self._get_translation_channel_mapping(after.guild.id)
+        if not channel_mapping or after.channel.id not in channel_mapping:
+            return
+        
+        source_channel = channel_mapping[after.channel.id]
+        tracker = await self._get_message_tracker(after.guild.id)
+        
+        if not tracker:
+            return
+        
+        self.logger.info(f"✏️ Message edited in {source_channel}: {after.id}")
+        
+        # Get existing mapping
+        mapping = await tracker.get_mapping(after.id)
+        if mapping:
+            # Edit existing translated messages in place
+            updated_messages = await self._edit_translated_messages(after, mapping, source_channel, after.guild.id)
+            
+            # Update mapping with new content
+            if updated_messages:
+                await tracker.update_mapping(
+                    after.id,
+                    updated_messages,
+                    after.content
+                )
+                self.logger.info(f"✅ Edited {len(updated_messages)} translated messages in place")
+    
+    async def _load_all_guild_configs(self):
+        """Load configurations for all connected guilds"""
+        for guild in self.guilds:
+            try:
+                config = await db_service.get_guild_config(guild.id)
+                if config:
+                    self.guild_configs[guild.id] = config
+                    
+                    # Initialize translator if API key is available
+                    if config.api_key:
+                        self.guild_translators[guild.id] = GeminiTranslator(config.api_key)
+                    
+                    # Initialize message tracker
+                    self.guild_trackers[guild.id] = DatabaseMessageTracker(guild.id)
+                    
+                    self.logger.info(f"✅ Loaded config for guild: {guild.name}")
                 else:
-                    self.logger.error(f"❌ Cannot access channel: {channel_name} (ID: {channel_id})")
+                    self.logger.info(f"ℹ️ No config found for guild: {guild.name} - use /init to configure")
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Failed to load config for guild {guild.id}: {e}")
+    
+    async def _get_guild_config(self, guild_id: int) -> Optional[GuildConfig]:
+        """Get guild configuration, loading from database if not cached"""
+        if guild_id not in self.guild_configs:
+            try:
+                config = await db_service.get_guild_config(guild_id)
+                if config:
+                    self.guild_configs[guild_id] = config
+                    
+                    # Initialize translator if needed
+                    if config.api_key and guild_id not in self.guild_translators:
+                        self.guild_translators[guild_id] = GeminiTranslator(config.api_key)
+                    
+                    # Initialize message tracker if needed
+                    if guild_id not in self.guild_trackers:
+                        self.guild_trackers[guild_id] = DatabaseMessageTracker(guild_id)
+                        
+                return config
+            except Exception as e:
+                self.logger.error(f"❌ Failed to get guild config for {guild_id}: {e}")
+                return None
+        
+        return self.guild_configs.get(guild_id)
+    
+    async def _get_translator(self, guild_id: int) -> Optional[GeminiTranslator]:
+        """Get translator for a guild"""
+        if guild_id not in self.guild_translators:
+            config = await self._get_guild_config(guild_id)
+            if config and config.api_key:
+                self.guild_translators[guild_id] = GeminiTranslator(config.api_key)
+        
+        return self.guild_translators.get(guild_id)
+    
+    async def _get_message_tracker(self, guild_id: int) -> Optional[DatabaseMessageTracker]:
+        """Get message tracker for a guild"""
+        if guild_id not in self.guild_trackers:
+            self.guild_trackers[guild_id] = DatabaseMessageTracker(guild_id)
+        
+        return self.guild_trackers.get(guild_id)
+    
+    async def _get_translation_channel_mapping(self, guild_id: int) -> Optional[Dict[int, str]]:
+        """Get channel ID to language mapping for translation"""
+        try:
+            translation_configs = await db_service.get_translation_configs(guild_id)
+            if not translation_configs:
+                return None
             
-            self.logger.info(f"📊 Channel accessibility: {accessible_channels}/{len(self.channel_ids)} channels accessible")
+            return {config.channel_id: config.language_code for config in translation_configs}
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to sync commands: {e}")
-        
-        self.logger.info("🚀 Bot initialization completed - Ready to translate!")
+            self.logger.error(f"❌ Failed to get translation channel mapping for {guild_id}: {e}")
+            return None
     
-    async def on_message(self, message: discord.Message):
-        if message.author.bot:
-            self.logger.debug(f"🤖 Ignoring bot message from {message.author}")
-            return
+    async def _process_message(self, message):
+        """Process message for translation"""
+        guild_id = message.guild.id
         
-        if message.guild.id != self.server_id:
-            self.logger.debug(f"🚫 Ignoring message from different server: {message.guild.id}")
-            return
-        
-        if message.channel.id not in self.id_to_channel:
-            self.logger.debug(f"🚫 Ignoring message from non-translation channel: {message.channel.name}")
-            return
-        
+        # Prevent duplicate processing
         if message.id in self.processing_messages:
-            self.logger.debug(f"⏳ Message already being processed: {message.id}")
             return
-        
-        source_channel = self.id_to_channel[message.channel.id]
-        self.logger.info(f"📨 New message in {source_channel} from {message.author.display_name}: {message.content[:50]}...")
         
         self.processing_messages.add(message.id)
         
         try:
-            await self._process_message(message)
+            # Get channel mapping
+            channel_mapping = await self._get_translation_channel_mapping(guild_id)
+            if not channel_mapping or message.channel.id not in channel_mapping:
+                return
+            
+            source_language = channel_mapping[message.channel.id]
+            
+            # Check for emoji/sticker only content
+            if self.emoji_sticker_handler.should_skip_translation(message):
+                await self._handle_emoji_sticker_message(message, source_language, guild_id)
+                return
+            
+            # Handle text translation
+            if message.content and not self._is_command_or_link(message.content):
+                await self._handle_text_translation(message, source_language, guild_id)
+            
+            # Handle image/file sharing
+            if message.attachments:
+                await self._handle_attachments(message, source_language, guild_id)
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error processing message {message.id}: {e}")
         finally:
             self.processing_messages.discard(message.id)
-
-    async def on_message_delete(self, message: discord.Message):
-        """Handle message deletion - delete corresponding translated messages."""
-        if message.guild.id != self.server_id:
+    
+    async def _handle_text_translation(self, message, source_language: str, guild_id: int):
+        """Handle text message translation"""
+        translator = await self._get_translator(guild_id)
+        if not translator:
+            self.logger.warning(f"⚠️ No translator available for guild {guild_id}")
             return
         
-        if message.channel.id not in self.id_to_channel:
+        # Get translation channel mapping
+        translation_configs = await db_service.get_translation_configs(guild_id)
+        target_channels = {config.language_code: config.channel_id for config in translation_configs}
+        
+        # Remove source channel from targets
+        target_channels.pop(source_language, None)
+        
+        if not target_channels:
             return
         
-        self.logger.info(f"🗑️ Message deleted in {self.id_to_channel[message.channel.id]}: {message.id}")
+        # Translate to all target languages
+        translations = {}
+        for target_lang, channel_id in target_channels.items():
+            try:
+                translated_text = await translator.translate(message.content, target_lang)
+                if translated_text:
+                    translations[target_lang] = translated_text
+            except Exception as e:
+                self.logger.error(f"❌ Translation failed for {target_lang}: {e}")
         
-        # Get mapping and delete translated messages
-        mapping = await self.message_tracker.get_mapping(message.id)
-        if mapping:
-            await self._delete_translated_messages(mapping)
-            await self.message_tracker.remove_mapping(message.id)
-            self.logger.info(f"✅ Deleted {len(mapping.translated_messages)} translated messages")
-
-    async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        """Handle message editing - update translated messages in place."""
-        if after.guild.id != self.server_id:
+        if not translations:
             return
         
-        if after.channel.id not in self.id_to_channel:
-            return
+        # Send translations and track messages
+        translated_messages = {}
+        tracker = await self._get_message_tracker(guild_id)
         
-        if after.author.bot:
-            return
+        # Handle reply chains
+        reply_mappings = {}
+        if message.reference and message.reference.message_id:
+            original_mapping = await tracker.get_mapping(message.reference.message_id)
+            if original_mapping:
+                reply_mappings = original_mapping.translated_messages
         
-        source_channel = self.id_to_channel[after.channel.id]
-        self.logger.info(f"✏️ Message edited in {source_channel}: {after.id}")
-        
-        # Get existing mapping
-        mapping = await self.message_tracker.get_mapping(after.id)
-        if mapping:
-            # Edit existing translated messages in place
-            updated_messages = await self._edit_translated_messages(after, mapping, source_channel)
+        # Send translations
+        for target_lang, translated_text in translations.items():
+            channel_id = target_channels[target_lang]
+            channel = self.get_channel(channel_id)
             
-            # Update mapping with new content
-            if updated_messages:
-                await self.message_tracker.update_mapping(
-                    after.id, 
-                    updated_messages, 
-                    after.content
-                )
-                self.logger.info(f"✅ Edited {len(updated_messages)} translated messages in place")
-
-    async def _process_message(self, message: discord.Message):
-        source_channel = self.id_to_channel[message.channel.id]
+            if channel:
+                try:
+                    # Send with reply if applicable
+                    reply_to_id = reply_mappings.get(target_lang)
+                    sent_message = await self._send_translation_with_reply(
+                        message, channel, translated_text, reply_to_id
+                    )
+                    
+                    if sent_message:
+                        translated_messages[target_lang] = sent_message.id
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to send translation to {target_lang}: {e}")
         
-        # Check if message should skip translation (emoji/sticker only)
-        if self.emoji_sticker_handler.should_skip_translation(message):
-            await self._handle_emoji_sticker_only(message, source_channel)
-            return
-        
-        if not await self.rate_limiter.acquire():
-            self.logger.warning(f"Rate limit exceeded, skipping message from {message.author}")
-            return
-        
-        if not self.cost_monitor.can_make_request():
-            self.logger.warning(f"Cost limit reached, skipping message from {message.author}")
-            return
-        
-        has_text = message.content.strip()
-        has_attachments = message.attachments
-        has_embeds = message.embeds
-        has_stickers = message.stickers
-        
-        if not (has_text or has_attachments or has_embeds or has_stickers):
-            return
-        
-        # Only record cost for actual translation requests
-        if has_text and not self._is_command_or_link(message.content):
-            await self.cost_monitor.record_request()
-        
-        tasks = []
-        
-        if has_text and not self._is_command_or_link(message.content):
-            task = self._handle_text_translation(message, source_channel)
-            tasks.append(task)
-        
-        if has_attachments:
-            task = self._handle_attachments(message, source_channel)
-            tasks.append(task)
-        
-        if has_embeds or self._is_command_or_link(message.content):
-            task = self._handle_embeds_and_links(message, source_channel)
-            tasks.append(task)
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # Save message mapping
+        if translated_messages and tracker:
+            await tracker.add_mapping(
+                message.id,
+                message.channel.id,
+                translated_messages,
+                message.content
+            )
+    
+    async def _send_translation_with_reply(self, original_message, target_channel, 
+                                         translated_text: str, reply_to_id: Optional[int] = None):
+        """Send translation with reply reference if applicable"""
+        try:
+            # Create embed
+            username = original_message.author.display_name
+            embed = discord.Embed(
+                description=translated_text,
+                color=0x7289DA
+            )
+            embed.set_author(
+                name=username,
+                icon_url=original_message.author.display_avatar.url
+            )
+            
+            # Send with reply if available
+            reference = None
+            if reply_to_id:
+                try:
+                    reply_message = await target_channel.fetch_message(reply_to_id)
+                    reference = reply_message
+                except:
+                    pass
+            
+            return await target_channel.send(embed=embed, reference=reference)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to send translation: {e}")
+            return None
     
     def _is_command_or_link(self, content: str) -> bool:
-        content = content.strip().lower()
-        return (content.startswith('/') or 
-                content.startswith('!') or
-                'http://' in content or 
-                'https://' in content or
-                'discord.gg' in content)
+        """Check if content is a command or contains only links"""
+        content = content.strip()
+        
+        if content.startswith(('/', '!', '?', '.', ',')):
+            return True
+        
+        # Check if content is primarily links
+        words = content.split()
+        link_count = sum(1 for word in words if word.startswith(('http://', 'https://', 'www.')))
+        
+        return len(words) > 0 and (link_count / len(words)) > 0.5
     
-    async def _handle_text_translation(self, message: discord.Message, source_channel: str):
-        try:
-            translations = await self.translator.translate_to_all_languages(
-                message.content, source_channel
+    # Command implementations
+    
+    async def _show_status(self, ctx):
+        """Show bot status for this server"""
+        guild_config = await self._get_guild_config(ctx.guild.id)
+        
+        if not guild_config:
+            embed = discord.Embed(
+                title="❌ 봇이 설정되지 않음",
+                description="`/init` 명령어를 사용하여 봇을 설정해주세요.",
+                color=0xFF0000
             )
-            
-            translated_message_ids = {}
-            
-            # Check if this is a reply
-            reply_to_id = None
-            if message.reference and message.reference.message_id:
-                reply_to_id = message.reference.message_id
-            
-            for target_channel, translated_text in translations.items():
-                if translated_text:
-                    sent_message = await self._send_translation_with_reply(
-                        message, target_channel, translated_text, reply_to_id
-                    )
-                    if sent_message:
-                        translated_message_ids[target_channel] = sent_message.id
-            
-            # Add mapping to tracker
-            if translated_message_ids:
-                await self.message_tracker.add_mapping(
-                    original_message_id=message.id,
-                    original_channel_id=message.channel.id,
-                    original_author_id=message.author.id,
-                    translated_messages=translated_message_ids,
-                    content_preview=message.content,
-                    message_type='text',
-                    reply_to=reply_to_id
-                )
-                self.logger.debug(f"📝 Added message mapping: {message.id} -> {translated_message_ids}")
-                    
-        except Exception as e:
-            self.logger.error(f"Text translation failed: {e}")
-    
-    async def _handle_attachments(self, message: discord.Message, source_channel: str):
-        try:
-            for target_channel in self.channel_ids.keys():
-                if target_channel != source_channel:
-                    await self._send_attachments(message, target_channel)
-                    
-        except Exception as e:
-            self.logger.error(f"Attachment handling failed: {e}")
-    
-    async def _handle_embeds_and_links(self, message: discord.Message, source_channel: str):
-        try:
-            for target_channel in self.channel_ids.keys():
-                if target_channel != source_channel:
-                    await self._send_embed_or_link(message, target_channel)
-                    
-        except Exception as e:
-            self.logger.error(f"Embed/link handling failed: {e}")
-    
-    async def _send_translation(self, original_message: discord.Message, 
-                              target_channel: str, translated_text: str):
-        channel_id = self.channel_ids[target_channel]
-        channel = self.get_channel(channel_id)
-        
-        if not channel:
-            self.logger.error(f"Target channel not found: {channel_id}")
+            await ctx.send(embed=embed)
             return
-        
-        username = original_message.author.display_name
         
         embed = discord.Embed(
-            description=translated_text,
-            color=0x7289DA
-        )
-        embed.set_author(
-            name=username,
-            icon_url=original_message.author.display_avatar.url
+            title=f"📊 {ctx.guild.name} 봇 상태",
+            color=0x00FF00
         )
         
-        try:
-            await channel.send(embed=embed)
-            self.logger.debug(f"Translation sent to {target_channel}: {translated_text[:50]}...")
-        except Exception as e:
-            self.logger.error(f"Failed to send translation to {target_channel}: {e}")
-    
-    async def _send_attachments(self, original_message: discord.Message, target_channel: str):
-        channel_id = self.channel_ids[target_channel]
-        channel = self.get_channel(channel_id)
+        # Show enabled features
+        features = []
+        if guild_config.is_feature_enabled(FeatureType.TRANSLATION):
+            features.append("🌐 번역")
+        if guild_config.is_feature_enabled(FeatureType.TTS):
+            features.append("🔊 TTS")
+        if guild_config.is_feature_enabled(FeatureType.MUSIC):
+            features.append("🎵 음악")
         
-        if not channel:
-            return
+        embed.add_field(
+            name="활성화된 기능",
+            value=" | ".join(features) if features else "없음",
+            inline=False
+        )
         
-        username = original_message.author.display_name
-        files = []
-        
-        try:
-            for attachment in original_message.attachments:
-                file_data = await self.image_handler.process_attachment(attachment)
-                if file_data:
-                    files.append(discord.File(file_data, filename=attachment.filename))
-            
-            if files:
-                await channel.send(
-                    content=f"**{username}** uploaded:",
-                    files=files
-                )
+        # Show translation channels if enabled
+        if guild_config.is_feature_enabled(FeatureType.TRANSLATION):
+            translation_configs = await db_service.get_translation_configs(ctx.guild.id)
+            if translation_configs:
+                channel_info = []
+                for config in translation_configs:
+                    channel_info.append(f"{config.language_name}: <#{config.channel_id}>")
                 
-        except Exception as e:
-            self.logger.error(f"Failed to send attachments to {target_channel}: {e}")
-    
-    async def _send_embed_or_link(self, original_message: discord.Message, target_channel: str):
-        channel_id = self.channel_ids[target_channel]
-        channel = self.get_channel(channel_id)
-        
-        if not channel:
-            return
-        
-        username = original_message.author.display_name
-        
-        try:
-            content = f"**{username}**: {original_message.content}" if original_message.content else f"**{username}**:"
-            
-            await channel.send(
-                content=content,
-                embeds=original_message.embeds[:10] if original_message.embeds else None
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Failed to send embed/link to {target_channel}: {e}")
-
-    async def _handle_emoji_sticker_only(self, message: discord.Message, source_channel: str):
-        """Handle messages that contain only emojis or stickers."""
-        try:
-            for target_channel in self.channel_ids.keys():
-                if target_channel != source_channel:
-                    channel_id = self.channel_ids[target_channel]
-                    channel = self.get_channel(channel_id)
-                    
-                    if channel:
-                        await self.emoji_sticker_handler.send_emoji_sticker_message(
-                            message, channel
-                        )
-                        
-        except Exception as e:
-            self.logger.error(f"Failed to handle emoji/sticker message: {e}")
-
-    @commands.hybrid_command(name="status")
-    async def status_command(self, ctx):
-        rate_stats = self.rate_limiter.get_usage_stats()
-        cost_stats = self.cost_monitor.get_usage_stats()
-        
-        embed = discord.Embed(
-            title="🤖 Key Bot Status",
-            color=0x00ff00
-        )
+                embed.add_field(
+                    name="번역 채널",
+                    value="\n".join(channel_info),
+                    inline=False
+                )
         
         embed.add_field(
-            name="📊 Rate Limiting",
-            value=f"Requests this minute: {rate_stats['requests_this_minute']}/{rate_stats['requests_per_minute_limit']}\n"
-                  f"Requests today: {rate_stats['requests_today']}/{rate_stats['max_daily_requests']}",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="💰 Cost Monitoring",
-            value=f"Monthly cost: ${cost_stats['current_month_cost']:.4f}/${cost_stats['max_monthly_cost']:.2f}\n"
-                  f"Usage: {cost_stats['cost_percentage']:.1f}%\n"
-                  f"Total requests: {cost_stats['total_requests']}",
-            inline=False
+            name="초기화 상태",
+            value="✅ 완료" if guild_config.is_initialized else "❌ 미완료",
+            inline=True
         )
         
         await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="help")
-    async def help_command(self, ctx):
+    
+    async def _show_help(self, ctx):
+        """Show help information"""
         embed = discord.Embed(
-            title="🌐 Key Translation Bot",
-            description="Multi-language real-time translation bot",
+            title="📚 케이 봇 도움말",
+            description="다국어 실시간 번역, TTS, 음악 재생 봇",
             color=0x7289DA
         )
         
         embed.add_field(
-            name="🔄 Auto Translation",
-            value="Messages in language channels are automatically translated to other languages",
+            name="🚀 초기 설정",
+            value="`/init` - 봇 초기 설정 (관리자 권한 필요)",
             inline=False
         )
         
         embed.add_field(
-            name="📁 File Support", 
-            value="Images and files are automatically shared across channels",
+            name="📊 상태 확인",
+            value="`/status` - 현재 서버의 봇 설정 상태 확인",
             inline=False
         )
         
         embed.add_field(
-            name="🔗 Link & Embed Support",
-            value="Links and embeds are preserved and shared across channels",
+            name="🔧 관리자 명령어",
+            value="`/test_logging` - 로깅 레벨 테스트 (관리자 전용)",
             inline=False
         )
         
-        embed.add_field(
-            name="📋 Commands",
-            value="`/status` - Check bot status and usage\n"
-                  "`/help` - Show this help message\n"
-                  "`/test_logging` - Test all logging levels (Admin only)",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="test_logging")
-    async def test_logging_command(self, ctx):
-        """Test all logging levels - Admin only command."""
-        # Check if user has administrator permissions
-        if not ctx.author.guild_permissions.administrator:
-            await ctx.send("❌ This command requires administrator permissions.", ephemeral=True)
-            return
-        
-        from utils.logger import test_all_log_levels, get_log_level_info
-        
-        # Get current logging info
-        log_info = get_log_level_info()
-        
-        embed = discord.Embed(
-            title="🧪 Logging System Test",
-            description="Testing all logging levels...",
-            color=0x00ff00
-        )
-        
-        embed.add_field(
-            name="Current Log Level",
-            value=f"**{log_info['current_level']}**",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Visible Levels",
-            value=", ".join(log_info['visible_levels']),
-            inline=True
-        )
-        
-        if log_info['hidden_levels']:
+        guild_config = await self._get_guild_config(ctx.guild.id)
+        if guild_config and guild_config.is_initialized:
             embed.add_field(
-                name="Hidden Levels",
-                value=", ".join(log_info['hidden_levels']),
-                inline=True
+                name="✅ 현재 상태",
+                value="봇이 설정되어 있습니다. 설정된 기능을 사용할 수 있습니다.",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="⚠️ 설정 필요",
+                value="`/init` 명령어로 봇을 설정해주세요.",
+                inline=False
             )
         
-        embed.add_field(
-            name="📝 Note",
-            value="Check the bot logs to see the test messages. "
-                  f"Only levels {', '.join(log_info['visible_levels'])} will be visible with current settings.",
-            inline=False
-        )
-        
-        # Send the embed first
         await ctx.send(embed=embed)
+    
+    async def _test_logging(self, ctx):
+        """Test all logging levels"""
+        self.logger.debug("🔍 DEBUG: Test debug message")
+        self.logger.info("ℹ️ INFO: Test info message")
+        self.logger.warning("⚠️ WARNING: Test warning message")
+        self.logger.error("❌ ERROR: Test error message")
+        self.logger.critical("🚨 CRITICAL: Test critical message")
         
-        # Perform the logging test
-        self.logger.info("🧪 LOGGING TEST STARTED by admin")
-        test_all_log_levels(self.logger)
-        self.logger.info("🧪 LOGGING TEST COMPLETED")
-        
-        # Send completion message
-        await ctx.followup.send("✅ Logging test completed! Check the bot logs to see all test messages.", ephemeral=True)
-
-    async def _delete_translated_messages(self, mapping):
-        """Delete all translated messages for a given mapping."""
+        await ctx.send("✅ 모든 로깅 레벨 테스트 완료. 로그 파일을 확인하세요.")
+    
+    # Helper methods for message editing/deletion
+    
+    async def _delete_translated_messages(self, mapping, guild_id: int):
+        """Delete translated messages"""
         for channel_name, message_id in mapping.translated_messages.items():
             try:
-                channel_id = self.channel_ids[channel_name]
-                channel = self.get_channel(channel_id)
-                if channel:
-                    message = await channel.fetch_message(message_id)
-                    await message.delete()
-                    self.logger.debug(f"🗑️ Deleted translated message in {channel_name}: {message_id}")
-            except discord.NotFound:
-                self.logger.debug(f"⚠️ Translated message already deleted: {message_id}")
-            except Exception as e:
-                self.logger.error(f"❌ Failed to delete translated message {message_id}: {e}")
-
-    async def _retranslate_message(self, message: discord.Message, source_channel: str) -> Dict[str, int]:
-        """Re-translate a message and return new message IDs."""
-        new_translated_messages = {}
-        
-        try:
-            # Determine message type and handle accordingly
-            if self.emoji_sticker_handler.should_skip_translation(message):
-                # Handle emoji/sticker messages
-                for target_channel in self.channel_ids.keys():
-                    if target_channel != source_channel:
-                        channel_id = self.channel_ids[target_channel]
-                        channel = self.get_channel(channel_id)
-                        if channel:
-                            success = await self.emoji_sticker_handler.send_emoji_sticker_message(
-                                message, channel
-                            )
-                            if success:
-                                # Note: We can't easily get the message ID from send_emoji_sticker_message
-                                # This is a limitation we'll need to address
-                                pass
-            
-            elif message.content and not self._is_command_or_link(message.content):
-                # Handle text translation
-                translations = await self.translator.translate_to_all_languages(
-                    message.content, source_channel
-                )
+                # Get channel from translation configs
+                translation_configs = await db_service.get_translation_configs(guild_id)
+                target_channel_id = None
                 
-                for target_channel, translated_text in translations.items():
-                    if translated_text:
-                        sent_message = await self._send_translation_with_return(
-                            message, target_channel, translated_text
-                        )
-                        if sent_message:
-                            new_translated_messages[target_channel] = sent_message.id
-            
-            # Handle attachments, embeds, etc. (similar pattern)
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to retranslate message: {e}")
-        
-        return new_translated_messages
-
-    async def _send_translation_with_return(self, original_message: discord.Message, 
-                                          target_channel: str, translated_text: str) -> Optional[discord.Message]:
-        """Send translation and return the sent message object."""
-        channel_id = self.channel_ids[target_channel]
-        channel = self.get_channel(channel_id)
-        
-        if not channel:
-            self.logger.error(f"Target channel not found: {channel_id}")
-            return None
-        
-        username = original_message.author.display_name
-        
-        embed = discord.Embed(
-            description=translated_text,
-            color=0x7289DA
-        )
-        embed.set_author(
-            name=username,
-            icon_url=original_message.author.display_avatar.url
-        )
-        
-        try:
-            sent_message = await channel.send(embed=embed)
-            self.logger.debug(f"✅ Translation sent to {target_channel}: {translated_text[:50]}...")
-            return sent_message
-        except Exception as e:
-            self.logger.error(f"❌ Failed to send translation to {target_channel}: {e}")
-            return None
-
-    async def _edit_translated_messages(self, edited_message: discord.Message, 
-                                      mapping, source_channel: str) -> Dict[str, int]:
-        """Edit existing translated messages in place to maintain order."""
+                for config in translation_configs:
+                    if config.language_code == channel_name:
+                        target_channel_id = config.channel_id
+                        break
+                
+                if target_channel_id:
+                    channel = self.get_channel(target_channel_id)
+                    if channel:
+                        message = await channel.fetch_message(message_id)
+                        await message.delete()
+                        self.logger.debug(f"🗑️ Deleted message {message_id} in {channel_name}")
+                        
+            except discord.NotFound:
+                self.logger.warning(f"⚠️ Message {message_id} not found for deletion")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete message {message_id}: {e}")
+    
+    async def _edit_translated_messages(self, edited_message, mapping, source_language: str, guild_id: int):
+        """Edit existing translated messages in place"""
         updated_messages = {}
         
         try:
-            # Only handle text translation edits for now
             if edited_message.content and not self._is_command_or_link(edited_message.content):
-                translations = await self.translator.translate_to_all_languages(
-                    edited_message.content, source_channel
-                )
+                translator = await self._get_translator(guild_id)
+                if not translator:
+                    return updated_messages
                 
-                for target_channel, translated_text in translations.items():
-                    if translated_text and target_channel in mapping.translated_messages:
+                # Get translation configs
+                translation_configs = await db_service.get_translation_configs(guild_id)
+                target_channels = {config.language_code: config.channel_id for config in translation_configs}
+                target_channels.pop(source_language, None)
+                
+                # Translate to all target languages
+                for target_lang, channel_id in target_channels.items():
+                    if target_lang in mapping.translated_messages:
                         try:
-                            # Get the existing translated message
-                            channel_id = self.channel_ids[target_channel]
-                            channel = self.get_channel(channel_id)
-                            if channel:
-                                message_id = mapping.translated_messages[target_channel]
-                                existing_message = await channel.fetch_message(message_id)
-                                
-                                # Create updated embed
-                                username = edited_message.author.display_name
-                                embed = discord.Embed(
-                                    description=translated_text,
-                                    color=0x7289DA
-                                )
-                                embed.set_author(
-                                    name=username,
-                                    icon_url=edited_message.author.display_avatar.url
-                                )
-                                
-                                # Edit the existing message
-                                await existing_message.edit(embed=embed)
-                                updated_messages[target_channel] = message_id
-                                self.logger.debug(f"✏️ Edited message in {target_channel}: {message_id}")
-                                
+                            translated_text = await translator.translate(edited_message.content, target_lang)
+                            if translated_text:
+                                # Get the existing translated message
+                                channel = self.get_channel(channel_id)
+                                if channel:
+                                    message_id = mapping.translated_messages[target_lang]
+                                    existing_message = await channel.fetch_message(message_id)
+                                    
+                                    # Create updated embed
+                                    username = edited_message.author.display_name
+                                    embed = discord.Embed(
+                                        description=translated_text,
+                                        color=0x7289DA
+                                    )
+                                    embed.set_author(
+                                        name=username,
+                                        icon_url=edited_message.author.display_avatar.url
+                                    )
+                                    
+                                    # Edit the existing message
+                                    await existing_message.edit(embed=embed)
+                                    updated_messages[target_lang] = message_id
+                                    self.logger.debug(f"✏️ Edited message in {target_lang}: {message_id}")
+                        
                         except discord.NotFound:
                             self.logger.warning(f"⚠️ Translated message not found for editing: {message_id}")
                         except Exception as e:
-                            self.logger.error(f"❌ Failed to edit translated message in {target_channel}: {e}")
-            
+                            self.logger.error(f"❌ Failed to edit translated message in {target_lang}: {e}")
+        
         except Exception as e:
             self.logger.error(f"❌ Failed to edit translated messages: {e}")
         
         return updated_messages
-
-    async def _send_translation_with_reply(self, original_message: discord.Message, 
-                                         target_channel: str, translated_text: str,
-                                         reply_to_id: Optional[int] = None) -> Optional[discord.Message]:
-        """Send translation with reply reference if applicable."""
-        channel_id = self.channel_ids[target_channel]
-        channel = self.get_channel(channel_id)
-        
-        if not channel:
-            self.logger.error(f"Target channel not found: {channel_id}")
-            return None
-        
-        username = original_message.author.display_name
-        
-        embed = discord.Embed(
-            description=translated_text,
-            color=0x7289DA
-        )
-        embed.set_author(
-            name=username,
-            icon_url=original_message.author.display_avatar.url
-        )
-        
-        # Handle reply reference
-        message_reference = None
-        if reply_to_id:
-            # Find the translated version of the replied-to message
-            reply_mapping = await self.message_tracker.get_mapping(reply_to_id)
-            if reply_mapping and target_channel in reply_mapping.translated_messages:
-                try:
-                    translated_reply_id = reply_mapping.translated_messages[target_channel]
-                    reply_message = await channel.fetch_message(translated_reply_id)
-                    message_reference = reply_message
-                    self.logger.debug(f"🔗 Adding reply reference to message {translated_reply_id}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Could not fetch reply message: {e}")
-        
-        try:
-            sent_message = await channel.send(
-                embed=embed,
-                reference=message_reference,
-                mention_author=False  # Don't ping the original author
-            )
-            self.logger.debug(f"✅ Translation sent to {target_channel}: {translated_text[:50]}...")
-            return sent_message
-        except Exception as e:
-            self.logger.error(f"❌ Failed to send translation to {target_channel}: {e}")
-            return None
+    
+    # Placeholder methods for future features
+    
+    async def _handle_emoji_sticker_message(self, message, source_language: str, guild_id: int):
+        """Handle emoji/sticker only messages"""
+        # This will be implemented when emoji/sticker sharing is needed
+        pass
+    
+    async def _handle_attachments(self, message, source_language: str, guild_id: int):
+        """Handle message attachments"""
+        # This will be implemented when file sharing is needed
+        pass

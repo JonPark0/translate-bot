@@ -15,8 +15,7 @@ from dotenv import load_dotenv
 from bot.translation_bot import TranslationBot
 from bot.health_server import HealthServer
 from utils.logger import setup_logger
-from utils.rate_limiter import RateLimiter
-from utils.cost_monitor import CostMonitor
+from database.connection import db_manager
 
 
 async def main():
@@ -24,14 +23,10 @@ async def main():
     
     logger = setup_logger()
     
+    # Only Discord token is required now - other configs moved to database
     required_env_vars = [
         'DISCORD_TOKEN',
-        'GEMINI_API_KEY',
-        'SERVER_ID',
-        'KOREAN_CHANNEL_ID',
-        'ENGLISH_CHANNEL_ID',
-        'JAPANESE_CHANNEL_ID',
-        'CHINESE_CHANNEL_ID'
+        'DB_PASSWORD'
     ]
     
     for var in required_env_vars:
@@ -39,27 +34,24 @@ async def main():
             logger.critical(f"Missing required environment variable: {var} - Bot cannot start")
             sys.exit(1)
     
-    logger.info("Starting Key Translation Bot...")
+    logger.info("🚀 Starting Key Translation Bot...")
     
-    rate_limiter = RateLimiter(
-        requests_per_minute=int(os.getenv('RATE_LIMIT_PER_MINUTE', 30)),
-        max_daily_requests=int(os.getenv('MAX_DAILY_REQUESTS', 1000))
-    )
-    
-    cost_monitor = CostMonitor(
-        max_monthly_cost=float(os.getenv('MAX_MONTHLY_COST_USD', 10.0)),
-        alert_threshold=float(os.getenv('COST_ALERT_THRESHOLD_USD', 8.0))
-    )
+    # Initialize database connection
+    try:
+        await db_manager.initialize()
+        logger.info("✅ Database connection established")
+    except Exception as e:
+        logger.critical(f"❌ Failed to initialize database: {e}")
+        sys.exit(1)
     
     intents = discord.Intents.default()
     intents.message_content = True
     intents.guilds = True
+    intents.voice_states = True  # Needed for TTS and music features
     
     bot = TranslationBot(
-        command_prefix='!',
-        intents=intents,
-        rate_limiter=rate_limiter,
-        cost_monitor=cost_monitor
+        command_prefix='/',
+        intents=intents
     )
     
     health_server = HealthServer(bot)
@@ -86,14 +78,15 @@ async def main():
 
 async def shutdown(bot: TranslationBot, health_server: HealthServer):
     logger = logging.getLogger(__name__)
-    logger.info("Shutting down bot...")
+    logger.info("🔄 Shutting down bot...")
     
     try:
         await health_server.stop()
         await bot.close()
-        logger.info("Bot shutdown complete")
+        await db_manager.close()
+        logger.info("✅ Bot shutdown complete")
     except Exception as e:
-        logger.error(f"Error during shutdown: {e}", exc_info=True)
+        logger.error(f"❌ Error during shutdown: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
