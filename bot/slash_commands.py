@@ -390,7 +390,10 @@ class SlashCommands(commands.Cog):
         else:
             if not value:
                 # Show current value
-                current_value = guild_config.settings.get(setting.value, "설정되지 않음")
+                if not guild_config.settings or not isinstance(guild_config.settings, dict):
+                    current_value = "설정되지 않음"
+                else:
+                    current_value = guild_config.settings.get(setting.value, "설정되지 않음")
                 await interaction.response.send_message(
                     f"📊 현재 **{setting.name}**: {current_value}",
                     ephemeral=True
@@ -398,6 +401,15 @@ class SlashCommands(commands.Cog):
             else:
                 # Update setting
                 try:
+                    if not guild_config.settings or not isinstance(guild_config.settings, dict):
+                        guild_config.settings = {
+                            "tts_timeout_minutes": 10,
+                            "max_queue_size": 100,
+                            "rate_limit_per_minute": 30,
+                            "max_daily_requests": 1000,
+                            "max_monthly_cost_usd": 10.0,
+                            "cost_alert_threshold_usd": 8.0
+                        }
                     guild_config.settings[setting.value] = value
                     await db_service.update_guild_config(guild_config)
                     

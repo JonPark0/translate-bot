@@ -60,12 +60,26 @@ class GuildConfig:
         return asdict(self)
 
     def is_feature_enabled(self, feature: FeatureType) -> bool:
+        if not self.features or not isinstance(self.features, dict):
+            return False
         return self.features.get(feature.value, False)
 
     def enable_feature(self, feature: FeatureType):
+        if not self.features or not isinstance(self.features, dict):
+            self.features = {
+                "translation": False,
+                "tts": False,
+                "music": False
+            }
         self.features[feature.value] = True
 
     def disable_feature(self, feature: FeatureType):
+        if not self.features or not isinstance(self.features, dict):
+            self.features = {
+                "translation": False,
+                "tts": False,
+                "music": False
+            }
         self.features[feature.value] = False
 
 

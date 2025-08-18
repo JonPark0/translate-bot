@@ -82,6 +82,14 @@ class FeatureToggleButton(discord.ui.Button):
                 )
                 return
             
+            # Ensure features is a dict
+            if not hasattr(guild_config, 'features') or guild_config.features is None:
+                guild_config.features = {
+                    "translation": False,
+                    "tts": False,
+                    "music": False
+                }
+            
             # Toggle feature
             if guild_config.is_feature_enabled(self.feature):
                 guild_config.disable_feature(self.feature)

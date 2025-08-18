@@ -34,13 +34,26 @@ class DatabaseService:
             )
             
             if row:
+                # Parse JSON fields if they are strings
+                features = row['features']
+                if isinstance(features, str):
+                    features = json.loads(features)
+                
+                channels = row['channels']
+                if isinstance(channels, str):
+                    channels = json.loads(channels)
+                
+                settings = row['settings']
+                if isinstance(settings, str):
+                    settings = json.loads(settings)
+                
                 return GuildConfig(
                     guild_id=row['guild_id'],
                     guild_name=row['guild_name'],
                     api_key=row['api_key'],
-                    features=row['features'],
-                    channels=row['channels'],
-                    settings=row['settings'],
+                    features=features,
+                    channels=channels,
+                    settings=settings,
                     is_initialized=row['is_initialized'],
                     created_at=row['created_at'],
                     updated_at=row['updated_at']
