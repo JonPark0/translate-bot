@@ -13,6 +13,10 @@ from discord.ext import commands
 from .setup_manager import SetupManager
 from database.service import db_service
 from database.models import GuildConfig, FeatureType
+from .interactive_ui import (
+    StatusView, FeatureToggleView, QuickSetupView, 
+    ConfigModal, LanguageSelectView
+)
 
 
 class SlashCommands(commands.Cog):
@@ -66,16 +70,17 @@ class SlashCommands(commands.Cog):
     
     @app_commands.command(name="status", description="현재 서버의 봇 설정 상태를 확인합니다")
     async def status_command(self, interaction: discord.Interaction):
-        """Show bot status for this server"""
+        """Show bot status for this server with interactive controls"""
         guild_config = await self._get_guild_config(interaction.guild.id)
         
         if not guild_config:
             embed = discord.Embed(
                 title="❌ 봇이 설정되지 않음",
-                description="`/init` 명령어를 사용하여 봇을 설정해주세요.",
+                description="아래 버튼을 클릭하여 빠른 설정을 시작하거나 `/init` 명령어를 사용하세요.",
                 color=0xFF0000
             )
-            await interaction.response.send_message(embed=embed)
+            view = QuickSetupView()
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             return
         
         embed = discord.Embed(
@@ -121,7 +126,9 @@ class SlashCommands(commands.Cog):
             inline=True
         )
         
-        await interaction.response.send_message(embed=embed)
+        # Add interactive status view
+        view = StatusView(guild_config)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     
     @app_commands.command(name="keyhelp", description="봇 사용법과 명령어를 보여줍니다")
     async def help_command(self, interaction: discord.Interaction):
@@ -263,6 +270,146 @@ class SlashCommands(commands.Cog):
                 f"❌ 설정 업데이트 중 오류가 발생했습니다: {e}",
                 ephemeral=True
             )
+    
+    @app_commands.command(name="manage", description="봇 기능을 대화형으로 관리합니다 (관리자 전용)")
+    async def manage_command(self, interaction: discord.Interaction):
+        """Interactive feature management"""
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ 관리자 권한이 필요합니다.", 
+                ephemeral=True
+            )
+            return
+        
+        try:
+            guild_config = await self._get_guild_config(interaction.guild.id)
+            if not guild_config:
+                embed = discord.Embed(
+                    title="❌ 봇이 설정되지 않음",
+                    description="먼저 `/init` 명령어로 봇을 설정해주세요.",
+                    color=0xFF0000
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            embed = discord.Embed(
+                title="⚙️ 봇 기능 관리",
+                description="버튼을 클릭하여 기능을 활성화/비활성화하세요.",
+                color=0x7289DA
+            )
+            
+            embed.add_field(
+                name="현재 상태",
+                value=f"🌐 번역: {'✅' if guild_config.is_feature_enabled(FeatureType.TRANSLATION) else '❌'}\n"
+                      f"🔊 TTS: {'✅' if guild_config.is_feature_enabled(FeatureType.TTS) else '❌'}\n"
+                      f"🎵 음악: {'✅' if guild_config.is_feature_enabled(FeatureType.MUSIC) else '❌'}",
+                inline=False
+            )
+            
+            view = FeatureToggleView(guild_config)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load management interface: {e}")
+            await interaction.response.send_message(
+                f"❌ 오류가 발생했습니다: {e}",
+                ephemeral=True
+            )
+    
+    @app_commands.command(name="quick_setup", description="빠른 설정으로 일반적인 구성을 쉽게 설정합니다")
+    async def quick_setup_command(self, interaction: discord.Interaction):
+        """Quick setup with common configurations"""
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ 관리자 권한이 필요합니다.", 
+                ephemeral=True
+            )
+            return
+        
+        embed = discord.Embed(
+            title="🚀 빠른 설정",
+            description="사용하고자 하는 기능을 선택하세요:",
+            color=0x00FF7F
+        )
+        
+        embed.add_field(
+            name="설정 옵션",
+            value="🌐 **번역만 사용** - 다국어 번역 기능만 활성화\n"
+                  "🔊 **TTS만 사용** - 텍스트 음성 변환만 활성화\n"
+                  "🎵 **음악만 사용** - 음악 재생만 활성화\n"
+                  "⚙️ **전체 설정** - 모든 기능을 단계별로 설정",
+            inline=False
+        )
+        
+        view = QuickSetupView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    @app_commands.command(name="settings", description="고급 설정을 관리합니다 (관리자 전용)")
+    @app_commands.describe(
+        setting="변경할 설정",
+        value="새로운 값"
+    )
+    @app_commands.choices(setting=[
+        app_commands.Choice(name="API 키", value="api_key"),
+        app_commands.Choice(name="TTS 타임아웃", value="tts_timeout"),
+        app_commands.Choice(name="최대 큐 크기", value="max_queue"),
+        app_commands.Choice(name="속도 제한", value="rate_limit")
+    ])
+    async def settings_command(self, interaction: discord.Interaction,
+                             setting: app_commands.Choice[str],
+                             value: str = None):
+        """Advanced settings management"""
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ 관리자 권한이 필요합니다.", 
+                ephemeral=True
+            )
+            return
+        
+        guild_config = await self._get_guild_config(interaction.guild.id)
+        if not guild_config:
+            await interaction.response.send_message(
+                "❌ 봇이 설정되지 않았습니다. `/init` 명령어로 먼저 설정해주세요.",
+                ephemeral=True
+            )
+            return
+        
+        if setting.value == "api_key":
+            if not value:
+                # Show modal for secure API key input
+                modal = ConfigModal("API 키 변경", "api_key")
+                await interaction.response.send_modal(modal)
+            else:
+                await interaction.response.send_message(
+                    "⚠️ 보안을 위해 API 키는 모달을 통해 입력해주세요.",
+                    ephemeral=True
+                )
+        else:
+            if not value:
+                # Show current value
+                current_value = guild_config.settings.get(setting.value, "설정되지 않음")
+                await interaction.response.send_message(
+                    f"📊 현재 **{setting.name}**: {current_value}",
+                    ephemeral=True
+                )
+            else:
+                # Update setting
+                try:
+                    guild_config.settings[setting.value] = value
+                    await db_service.update_guild_config(guild_config)
+                    
+                    await interaction.response.send_message(
+                        f"✅ **{setting.name}**이(가) `{value}`로 변경되었습니다.",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"❌ 설정 변경 중 오류가 발생했습니다: {e}",
+                        ephemeral=True
+                    )
 
 
 async def setup(bot: commands.Bot):
